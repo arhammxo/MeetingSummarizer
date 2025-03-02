@@ -1,19 +1,19 @@
 import os
-from typing import Dict, List, Annotated, TypedDict, Literal, Union
+import json
+from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser
-import json
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 # Define the state of our graph
 class ActionItem(BaseModel):
     """An action item extracted from the meeting."""
     action: str = Field(description="The action to be taken")
-    assignee: str = Field(description="Person responsible for the action")
-    due_date: str = Field(description="Due date for the action (if mentioned)")
+    assignee: str = Field(description="Person responsible for the action", default="Unassigned")
+    due_date: str = Field(description="Due date for the action (if mentioned)", default="Not specified")
     priority: str = Field(description="Priority level (high, medium, low)", default="medium")
 
 class MeetingSummary(BaseModel):
@@ -108,7 +108,14 @@ action_prompt = ChatPromptTemplate.from_messages([
     - The priority level (high, medium, low) based on context
     
     Return your results as a JSON array of action items. If no action items are mentioned, return an empty array.
-    Each action item should have fields: 'action', 'assignee', 'due_date', and 'priority'."""),
+    Each action item should have fields: 'action', 'assignee', 'due_date', and 'priority'.
+    
+    IMPORTANT: Always provide a string value for each field. If a field is missing:
+    - For 'due_date': use "Not specified" 
+    - For 'priority': use "medium"
+    - For 'assignee': use "Unassigned"
+    
+    DO NOT return null values - use appropriate string defaults instead."""),
     ("human", """Meeting Transcript: {transcript}
     
     Meeting Summary: {summary}
@@ -128,11 +135,24 @@ def extract_actions_node(state: AgentState) -> AgentState:
     
     action_items = []
     for item in action_data:
+        # Handle possible None values by ensuring all fields are strings
+        action = item.get("action", "")
+        assignee = item.get("assignee", "Unassigned")
+        
+        # Explicitly convert None to strings
+        due_date = item.get("due_date")
+        if due_date is None or due_date == "":
+            due_date = "Not specified"
+            
+        priority = item.get("priority")
+        if priority is None or priority == "":
+            priority = "medium"
+        
         action_items.append(ActionItem(
-            action=item["action"],
-            assignee=item["assignee"],
-            due_date=item.get("due_date", "Not specified"),
-            priority=item.get("priority", "medium")
+            action=action,
+            assignee=assignee,
+            due_date=due_date,
+            priority=priority
         ))
     
     return {**state, "action_items": action_items, "current_step": "format_output"}
@@ -156,9 +176,13 @@ format_chain = format_prompt | llm | JsonOutputParser()
 
 def format_output_node(state: AgentState) -> AgentState:
     """Format the final output with the meeting summary and action items."""
+    # Convert Pydantic models to dictionaries for the LLM
+    meeting_summary_dict = state["meeting_summary"].model_dump()
+    action_items_dict = [item.model_dump() for item in state["action_items"]]
+    
     final_output = format_chain.invoke({
-        "meeting_summary": state["meeting_summary"],
-        "action_items": state["action_items"]
+        "meeting_summary": meeting_summary_dict,
+        "action_items": action_items_dict
     })
     return {**state, "final_output": final_output, "current_step": "complete"}
 
@@ -189,24 +213,40 @@ def create_meeting_summarizer_graph():
 # Main function to run the meeting summarizer
 def summarize_meeting(transcript: str, participants: List[str]):
     """Run the meeting summarizer on a transcript and return the summary and action items."""
+    # Check for empty inputs
+    if not transcript or not transcript.strip():
+        raise ValueError("Meeting transcript cannot be empty")
+    
+    if not participants:
+        raise ValueError("Participants list cannot be empty")
+    
+    # Clean the transcript
+    transcript = transcript.strip()
+    
     # Create the graph
     graph = create_meeting_summarizer_graph()
     
-    # Initialize the state
-    initial_state = {
-        "transcript": transcript,
-        "participants": participants,
-        "current_step": "initialization",
-        "analysis": {},
-        "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),
-        "action_items": [],
-        "final_output": {}
-    }
-    
-    # Run the graph
-    result = graph.invoke(initial_state)
-    
-    return result["final_output"]
+    try:
+        # Initialize the state
+        initial_state = {
+            "transcript": transcript,
+            "participants": participants,
+            "current_step": "initialization",
+            "analysis": {},
+            "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),
+            "action_items": [],
+            "final_output": {}
+        }
+        
+        # Run the graph
+        result = graph.invoke(initial_state)
+        
+        return result["final_output"]
+    except Exception as e:
+        # Provide meaningful error message
+        print(f"Error processing meeting: {str(e)}")
+        raise Exception(f"Failed to summarize meeting: {str(e)}")
+
 
 # Example usage
 if __name__ == "__main__":
