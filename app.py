@@ -91,6 +91,87 @@ if 'audio_processing_complete' not in st.session_state:
     st.session_state.audio_processing_complete = False
 if 'speaker_summaries' not in st.session_state:
     st.session_state.speaker_summaries = None
+if 'current_tab' not in st.session_state:
+    st.session_state.current_tab = "Meeting Summary"
+if 'meeting_result' not in st.session_state:
+    st.session_state.meeting_result = None
+
+# Function to display meeting summary tab
+def display_meeting_summary():
+    result = st.session_state.meeting_result
+    if not result:
+        st.info("No meeting summary available yet.")
+        return
+        
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Meeting Summary")
+        if "meeting_summary" in result and "summary" in result["meeting_summary"]:
+            st.write(result["meeting_summary"]["summary"])
+        else:
+            st.warning("Summary content is missing or malformed")
+        
+        st.subheader("Key Points")
+        if "meeting_summary" in result and "key_points" in result["meeting_summary"]:
+            for point in result["meeting_summary"]["key_points"]:
+                st.markdown(f"- {point}")
+        else:
+            st.warning("Key points are missing or malformed")
+        
+        st.subheader("Decisions Made")
+        if "meeting_summary" in result and "decisions" in result["meeting_summary"]:
+            for decision in result["meeting_summary"]["decisions"]:
+                st.markdown(f"- {decision}")
+        else:
+            st.warning("Decisions are missing or malformed")
+    
+    with col2:
+        st.subheader("Action Items")
+        if "action_items" in result and result["action_items"]:
+            for item in result["action_items"]:
+                with st.expander(f"📌 {item.get('action', 'Unnamed Action')}"):
+                    st.markdown(f"**Assignee:** {item.get('assignee', 'Unassigned')}")
+                    st.markdown(f"**Due Date:** {item.get('due_date', 'Not specified')}")
+                    
+                    priority = item.get('priority', 'medium').lower()
+                    if priority == "high":
+                        priority_color = "🔴 High"
+                    elif priority == "medium":
+                        priority_color = "🟠 Medium"
+                    else:
+                        priority_color = "🟢 Low"
+                        
+                    st.markdown(f"**Priority:** {priority_color}")
+        else:
+            st.info("No action items were identified in this meeting.")
+
+# Function to display speaker summaries tab
+def display_speaker_summaries():
+    speaker_summaries = st.session_state.speaker_summaries
+    if not speaker_summaries:
+        st.info("No speaker summaries available yet.")
+        return
+        
+    st.subheader("Speaker Contributions")
+    
+    for speaker, summary in speaker_summaries.items():
+        with st.expander(f"🗣️ {speaker}", expanded=False):
+            st.markdown(f"**Summary:** {summary.get('brief_summary', 'No summary available')}")
+            
+            st.markdown("**Key Contributions:**")
+            for contribution in summary.get('key_contributions', []):
+                st.markdown(f"- {contribution}")
+            
+            if summary.get('action_items'):
+                st.markdown("**Action Items:**")
+                for item in summary.get('action_items', []):
+                    st.markdown(f"- {item}")
+            
+            if summary.get('questions_raised'):
+                st.markdown("**Questions Raised:**")
+                for question in summary.get('questions_raised', []):
+                    st.markdown(f"- {question}")
 
 # Add tabs for different input methods
 input_method = st.radio(
@@ -271,6 +352,7 @@ if submit_button:
             # Call the meeting summarizer
             try:
                 result = summarize_meeting(final_transcript, participants)
+                st.session_state.meeting_result = result
                 
                 # Display success message
                 st.success("✅ Summary generated successfully!")
@@ -281,124 +363,8 @@ if submit_button:
                         # Generate speaker summaries
                         speaker_summaries = generate_speaker_summaries(final_transcript, participants)
                         st.session_state.speaker_summaries = speaker_summaries
-                        
-                        # Display speaker summaries in a new tab
-                        tabs = st.tabs(["Meeting Summary", "Speaker Summaries"])
-                        
-                        with tabs[0]:
-                            # The existing summary content
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                st.subheader("Meeting Summary")
-                                if "meeting_summary" in result and "summary" in result["meeting_summary"]:
-                                    st.write(result["meeting_summary"]["summary"])
-                                else:
-                                    st.warning("Summary content is missing or malformed")
-                                
-                                st.subheader("Key Points")
-                                if "meeting_summary" in result and "key_points" in result["meeting_summary"]:
-                                    for point in result["meeting_summary"]["key_points"]:
-                                        st.markdown(f"- {point}")
-                                else:
-                                    st.warning("Key points are missing or malformed")
-                                
-                                st.subheader("Decisions Made")
-                                if "meeting_summary" in result and "decisions" in result["meeting_summary"]:
-                                    for decision in result["meeting_summary"]["decisions"]:
-                                        st.markdown(f"- {decision}")
-                                else:
-                                    st.warning("Decisions are missing or malformed")
-                            
-                            with col2:
-                                st.subheader("Action Items")
-                                if "action_items" in result and result["action_items"]:
-                                    for item in result["action_items"]:
-                                        with st.expander(f"📌 {item.get('action', 'Unnamed Action')}"):
-                                            st.markdown(f"**Assignee:** {item.get('assignee', 'Unassigned')}")
-                                            st.markdown(f"**Due Date:** {item.get('due_date', 'Not specified')}")
-                                            
-                                            priority = item.get('priority', 'medium').lower()
-                                            if priority == "high":
-                                                priority_color = "🔴 High"
-                                            elif priority == "medium":
-                                                priority_color = "🟠 Medium"
-                                            else:
-                                                priority_color = "🟢 Low"
-                                                
-                                            st.markdown(f"**Priority:** {priority_color}")
-                                else:
-                                    st.info("No action items were identified in this meeting.")
-                        
-                        with tabs[1]:
-                            # Speaker-specific summaries
-                            st.subheader("Speaker Contributions")
-                            
-                            if speaker_summaries:
-                                for speaker, summary in speaker_summaries.items():
-                                    with st.expander(f"🗣️ {speaker}", expanded=False):
-                                        st.markdown(f"**Summary:** {summary.get('brief_summary', 'No summary available')}")
-                                        
-                                        st.markdown("**Key Contributions:**")
-                                        for contribution in summary.get('key_contributions', []):
-                                            st.markdown(f"- {contribution}")
-                                        
-                                        if summary.get('action_items'):
-                                            st.markdown("**Action Items:**")
-                                            for item in summary.get('action_items', []):
-                                                st.markdown(f"- {item}")
-                                        
-                                        if summary.get('questions_raised'):
-                                            st.markdown("**Questions Raised:**")
-                                            for question in summary.get('questions_raised', []):
-                                                st.markdown(f"- {question}")
-                            else:
-                                st.info("No speaker-specific summaries could be generated.")
                     except Exception as e:
                         st.error(f"Error generating speaker summaries: {str(e)}")
-                        # Continue with regular summary display
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.subheader("Meeting Summary")
-                            if "meeting_summary" in result and "summary" in result["meeting_summary"]:
-                                st.write(result["meeting_summary"]["summary"])
-                            else:
-                                st.warning("Summary content is missing or malformed")
-                            
-                            st.subheader("Key Points")
-                            if "meeting_summary" in result and "key_points" in result["meeting_summary"]:
-                                for point in result["meeting_summary"]["key_points"]:
-                                    st.markdown(f"- {point}")
-                            else:
-                                st.warning("Key points are missing or malformed")
-                            
-                            st.subheader("Decisions Made")
-                            if "meeting_summary" in result and "decisions" in result["meeting_summary"]:
-                                for decision in result["meeting_summary"]["decisions"]:
-                                    st.markdown(f"- {decision}")
-                            else:
-                                st.warning("Decisions are missing or malformed")
-                        
-                        with col2:
-                            st.subheader("Action Items")
-                            if "action_items" in result and result["action_items"]:
-                                for item in result["action_items"]:
-                                    with st.expander(f"📌 {item.get('action', 'Unnamed Action')}"):
-                                        st.markdown(f"**Assignee:** {item.get('assignee', 'Unassigned')}")
-                                        st.markdown(f"**Due Date:** {item.get('due_date', 'Not specified')}")
-                                        
-                                        priority = item.get('priority', 'medium').lower()
-                                        if priority == "high":
-                                            priority_color = "🔴 High"
-                                        elif priority == "medium":
-                                            priority_color = "🟠 Medium"
-                                        else:
-                                            priority_color = "🟢 Low"
-                                            
-                                        st.markdown(f"**Priority:** {priority_color}")
-                            else:
-                                st.info("No action items were identified in this meeting.")
                 
                 # Add download buttons for JSON export and transcript
                 st.download_button(
@@ -420,6 +386,9 @@ if submit_button:
                         file_name="meeting_transcript.txt",
                         mime="text/plain"
                     )
+                    
+                # Reset to default tab
+                st.session_state.current_tab = "Meeting Summary"
                 
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
@@ -427,6 +396,19 @@ if submit_button:
                 st.info("💡 Tips to fix this error: Check that your OpenAI API key is valid and has sufficient credits. Make sure your meeting transcript is properly formatted with speaker names.")
     elif submit_button and (not final_transcript or not participants):
         st.warning("Both transcript and participants are required to generate a summary.")
+
+# If we have results to display, show the tabs and content
+if st.session_state.meeting_result:
+    # Create radio buttons for tab selection instead of tabs component
+    tab_options = ["Meeting Summary", "Speaker Summaries"]
+    selected_tab = st.radio("View", tab_options, index=tab_options.index(st.session_state.current_tab))
+    st.session_state.current_tab = selected_tab
+    
+    # Display the selected tab content
+    if selected_tab == "Meeting Summary":
+        display_meeting_summary()
+    else:  # Speaker Summaries
+        display_speaker_summaries()
 
 # Add sidebar with tips
 with st.sidebar:

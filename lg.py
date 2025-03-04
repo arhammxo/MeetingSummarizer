@@ -33,7 +33,7 @@ class AgentState(TypedDict):
     final_output: Dict
 
 # Initialize our LLM
-llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=os.OPENAI_API_KEY)
+llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key="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")
 
 # Define the nodes for our graph
 
