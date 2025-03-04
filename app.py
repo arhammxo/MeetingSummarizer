@@ -25,11 +25,7 @@ st.subheader("Convert your meeting recordings or transcripts into concise summar
 def extract_participants(transcript):
     """
     Extract participant names from the meeting transcript.
-    
-    Looks for common patterns in meeting transcripts:
-    1. "Name (Role):" pattern
-    2. "Name:" at the beginning of lines
-    3. Speaker labels like "Speaker 0", "Speaker 1"
+    Supports multiple languages by looking for patterns rather than specific words.
     
     Args:
         transcript (str): The meeting transcript
@@ -39,19 +35,19 @@ def extract_participants(transcript):
     """
     participants = set()
     
-    # Pattern 1: Name (Role): Text
+    # Pattern 1: Name (Role): Text - works for English and transliterated Hindi
     pattern1 = r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s*\([^)]+\):'
     matches1 = re.findall(pattern1, transcript)
     for name in matches1:
         participants.add(name.strip())
     
-    # Pattern 2: Name: Text
+    # Pattern 2: Name: Text - works for English and transliterated Hindi
     pattern2 = r'(?:^|\n)([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s*:'
     matches2 = re.findall(pattern2, transcript)
     for name in matches2:
         participants.add(name.strip())
         
-    # Pattern 3: Speaker X (from audio transcription)
+    # Pattern 3: Speaker X (from audio transcription) - language independent
     pattern3 = r'Speaker[\s_](\d+)'
     matches3 = re.findall(pattern3, transcript)
     for speaker_num in matches3:
@@ -95,6 +91,8 @@ if 'current_tab' not in st.session_state:
     st.session_state.current_tab = "Meeting Summary"
 if 'meeting_result' not in st.session_state:
     st.session_state.meeting_result = None
+if 'detected_language' not in st.session_state:
+    st.session_state.detected_language = None
 
 # Function to display meeting summary tab
 def display_meeting_summary():
@@ -185,6 +183,30 @@ file_content = None
 
 if input_method == "Upload Audio":
     st.info("Upload an audio recording of your meeting. The system will transcribe it and identify speakers automatically.")
+    
+    # Language selection
+    language_options = {
+        "Auto-detect": None,
+        "English": "en",
+        "Hindi": "hi",
+        "Spanish": "es",
+        "French": "fr",
+        "German": "de",
+        "Chinese": "zh",
+        "Japanese": "ja",
+        "Russian": "ru",
+        "Arabic": "ar"
+    }
+    
+    selected_language = st.selectbox(
+        "Select Audio Language",
+        options=list(language_options.keys()),
+        index=0,
+        help="Select the primary language of your audio. Auto-detect works well for many languages but explicit selection may improve accuracy."
+    )
+    
+    language_code = language_options[selected_language]
+    
     audio_file = st.file_uploader(
         "Upload Meeting Recording",
         type=["wav", "mp3", "m4a"],
@@ -195,15 +217,18 @@ if input_method == "Upload Audio":
         st.info("Audio file detected. Click 'Process Audio' to transcribe and identify speakers.")
         
         if st.button("Process Audio"):
-            with st.spinner("Processing audio... This may take a few minutes depending on the file size."):
+            with st.spinner(f"Processing {selected_language if language_code else 'auto-detected'} audio... This may take a few minutes depending on the file size."):
                 # Save the uploaded file to a temporary location
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_file.name.split('.')[-1]}") as tmp_file:
                     tmp_file.write(audio_file.getvalue())
                     audio_path = tmp_file.name
                 
                 try:
-                    # Process the audio file using our audio processor
-                    transcript_data = process_audio_file(audio_path)
+                    # Process the audio file using our audio processor with the selected language
+                    transcript_data = process_audio_file(audio_path, language=language_code)
+                    
+                    # Store the detected language
+                    st.session_state.detected_language = transcript_data.get('language', 'auto-detected')
                     
                     # Format the transcript for display and processing
                     formatted_transcript = []
@@ -221,7 +246,12 @@ if input_method == "Upload Audio":
                     # Clean up the temporary file
                     os.unlink(audio_path)
                     
-                    st.success("Audio processing complete! The transcript is ready for summarization.")
+                    # Display success message with language info
+                    if st.session_state.detected_language:
+                        st.success(f"Audio processing complete! Detected language: {st.session_state.detected_language}. The transcript is ready for summarization.")
+                    else:
+                        st.success("Audio processing complete! The transcript is ready for summarization.")
+                        
                 except Exception as e:
                     st.error(f"Error processing audio: {str(e)}")
                     st.error(traceback.format_exc())
@@ -267,7 +297,7 @@ with st.form("meeting_form"):
             st.info("Please upload a transcript file above")
     elif input_method == "Upload Audio":
         if st.session_state.audio_processing_complete:
-            st.success("Audio processed successfully!")
+            st.success(f"Audio processed successfully! {'Language: ' + st.session_state.detected_language if st.session_state.detected_language else ''}")
         else:
             st.info("Please process an audio file above")
     
@@ -372,7 +402,8 @@ if submit_button:
                     data=json.dumps({
                         "meeting_summary": result["meeting_summary"],
                         "action_items": result["action_items"],
-                        "speaker_summaries": st.session_state.speaker_summaries if st.session_state.speaker_summaries else {}
+                        "speaker_summaries": st.session_state.speaker_summaries if st.session_state.speaker_summaries else {},
+                        "language": st.session_state.detected_language
                     }, indent=2),
                     file_name="meeting_summary.json",
                     mime="application/json"
@@ -415,6 +446,7 @@ with st.sidebar:
     st.header("Tips for Best Results")
     st.markdown("""
     - When using audio, ensure clear recording with minimal background noise
+    - For Hindi or other non-English audio, select the language for better accuracy
     - For text transcripts, include speaker names (e.g., "Alice: Hello everyone")
     - The app will automatically detect participants from the transcript or audio
     - For more accurate action items, make sure assignments and deadlines are clearly stated
@@ -426,6 +458,20 @@ with st.sidebar:
     st.markdown("""
     - Audio: WAV, MP3, M4A
     - Text: TXT
+    """)
+    
+    st.header("Supported Languages")
+    st.markdown("""
+    Audio transcription supports multiple languages including:
+    - English
+    - Hindi
+    - Spanish
+    - French
+    - German
+    - Chinese
+    - And many more...
+    
+    For best results with non-English audio, select the specific language rather than using auto-detect.
     """)
     
     st.header("Automatic Participant Detection")

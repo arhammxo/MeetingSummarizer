@@ -11,12 +11,17 @@ from datetime import datetime
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_file, language=None):
     """
     Transcribe audio file using Whisper model
     Returns segments with start time, end time, and text
+    
+    Args:
+        audio_file: Path to the audio file
+        language: Optional language code (e.g., 'hi' for Hindi, None for auto-detection)
     """
-    model = whisper.load_model("base")
+    # Load a larger model for better multilingual support
+    model = whisper.load_model("medium")
     
     # Add explicit path to ffmpeg if needed
     # Uncomment and modify if ffmpeg is not in your PATH
@@ -24,7 +29,21 @@ def transcribe_audio(audio_file):
     
     # Load audio with librosa
     audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
-    result = model.transcribe(audio)
+    
+    # Transcribe with language specification if provided
+    if language:
+        result = model.transcribe(audio, language=language)
+    else:
+        # Detect language then transcribe
+        # First, detect the language
+        audio_sample = audio[:48000]  # Use a short sample for detection
+        detection_result = model.detect_language(audio_sample)
+        detected_language = detection_result[0]
+        
+        # Then transcribe with the detected language
+        result = model.transcribe(audio, language=detected_language)
+        print(f"Detected language: {detected_language}")
+    
     return result["segments"]  # Contains 'start', 'end', 'text'
 
 def diarize_audio(audio_file):
@@ -96,12 +115,13 @@ def format_time(seconds):
     """Format seconds into HH:MM:SS format"""
     return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
 
-def process_audio_file(audio_file_path):
+def process_audio_file(audio_file_path, language=None):
     """
     Process audio file to extract transcript with speaker identification
     
     Args:
         audio_file_path: Path to the audio file
+        language: Optional language code (e.g., 'hi' for Hindi, None for auto-detection)
         
     Returns:
         Dictionary containing the transcript data and processing metrics
@@ -110,7 +130,8 @@ def process_audio_file(audio_file_path):
         'total_time': 0,
         'step_times': {},
         'transcript': [],
-        'formatted_transcript': []
+        'formatted_transcript': [],
+        'language': language or 'auto-detect'
     }
     
     try:
@@ -118,8 +139,17 @@ def process_audio_file(audio_file_path):
         
         # Transcribe with timing
         step_start = time.time()
-        transcription_segments = transcribe_audio(audio_file_path)
+        transcription_segments = transcribe_audio(audio_file_path, language)
         metrics['step_times']['transcription'] = time.time() - step_start
+        
+        # If language was auto-detected, get the detected language
+        if not language and transcription_segments:
+            # The language is available in the first segment's language attribute
+            try:
+                metrics['language'] = transcription_segments[0].get('language', 'auto-detected')
+            except:
+                # If we can't get it from the segment, at least we tried
+                pass
         
         # Diarize with timing
         step_start = time.time()
