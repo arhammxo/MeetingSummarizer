@@ -5,9 +5,12 @@ import os
 import io
 import re
 import tempfile
+import time
 from lg import summarize_meeting
 from audio_processor import process_audio_file
 from speaker_summarizer import generate_speaker_summaries
+from long_recording_processor import process_long_audio
+from summarize_long_transcripts import summarize_long_meeting
 
 # Check for OpenAI API key
 if not os.environ.get("OPENAI_API_KEY"):
@@ -93,6 +96,17 @@ if 'meeting_result' not in st.session_state:
     st.session_state.meeting_result = None
 if 'detected_language' not in st.session_state:
     st.session_state.detected_language = None
+if 'processing_progress' not in st.session_state:
+    st.session_state.processing_progress = 0
+if 'processing_status' not in st.session_state:
+    st.session_state.processing_status = ""
+if 'is_long_recording' not in st.session_state:
+    st.session_state.is_long_recording = False
+
+# Function to update processing progress
+def update_progress(progress, status):
+    st.session_state.processing_progress = progress
+    st.session_state.processing_status = status
 
 # Function to display meeting summary tab
 def display_meeting_summary():
@@ -123,6 +137,14 @@ def display_meeting_summary():
                 st.markdown(f"- {decision}")
         else:
             st.warning("Decisions are missing or malformed")
+            
+        # Display metadata if it exists
+        if "metadata" in result:
+            with st.expander("Meeting Metadata", expanded=False):
+                st.write(f"**Total Duration:** {result['metadata'].get('total_duration_minutes', 'Unknown')} minutes")
+                st.write(f"**Language:** {result['metadata'].get('language', 'Unknown')}")
+                if 'chunks_analyzed' in result['metadata']:
+                    st.write(f"**Chunks Analyzed:** {result['metadata']['chunks_analyzed']}")
     
     with col2:
         st.subheader("Action Items")
@@ -198,12 +220,24 @@ if input_method == "Upload Audio":
         "Arabic": "ar"
     }
     
-    selected_language = st.selectbox(
-        "Select Audio Language",
-        options=list(language_options.keys()),
-        index=0,
-        help="Select the primary language of your audio. Auto-detect works well for many languages but explicit selection may improve accuracy."
-    )
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        selected_language = st.selectbox(
+            "Select Audio Language",
+            options=list(language_options.keys()),
+            index=0,
+            help="Select the primary language of your audio. Auto-detect works well for many languages but explicit selection may improve accuracy."
+        )
+    
+    with col2:
+        # Option for long recordings
+        is_long_recording = st.checkbox(
+            "This is a long recording (>15 minutes)",
+            value=st.session_state.is_long_recording,
+            help="Enable special processing for longer recordings. Recommended for meetings over 15 minutes."
+        )
+        st.session_state.is_long_recording = is_long_recording
     
     language_code = language_options[selected_language]
     
@@ -217,44 +251,83 @@ if input_method == "Upload Audio":
         st.info("Audio file detected. Click 'Process Audio' to transcribe and identify speakers.")
         
         if st.button("Process Audio"):
-            with st.spinner(f"Processing {selected_language if language_code else 'auto-detected'} audio... This may take a few minutes depending on the file size."):
+            # Initialize progress
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            status_text.text("Starting audio processing...")
+            
+            # Reset processing progress
+            st.session_state.processing_progress = 0
+            st.session_state.processing_status = "Starting audio processing..."
+            st.session_state.audio_processing_complete = False
+            
+            # Update the UI with progress
+            def update_ui_progress():
+                progress_bar.progress(st.session_state.processing_progress / 100)
+                status_text.text(st.session_state.processing_status)
+            
+            try:
                 # Save the uploaded file to a temporary location
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_file.name.split('.')[-1]}") as tmp_file:
                     tmp_file.write(audio_file.getvalue())
                     audio_path = tmp_file.name
                 
-                try:
-                    # Process the audio file using our audio processor with the selected language
-                    transcript_data = process_audio_file(audio_path, language=language_code)
+                update_ui_progress()
+                
+                if is_long_recording:
+                    # Process long audio with chunking
+                    transcript_data = process_long_audio(
+                        audio_path, 
+                        language=language_code, 
+                        progress_callback=update_progress
+                    )
+                else:
+                    # Process regular audio
+                    with st.spinner(f"Processing {selected_language if language_code else 'auto-detected'} audio..."):
+                        transcript_data = process_audio_file(audio_path, language=language_code)
+                        # Simulate progress for regular processing
+                        for i in range(10):
+                            update_progress(i * 10, f"Processing audio... {i * 10}%")
+                            update_ui_progress()
+                            time.sleep(0.2)  # Just for UI feedback
+                
+                # Store the detected language
+                st.session_state.detected_language = transcript_data.get('language', 'auto-detected')
+                
+                # Format the transcript for display and processing
+                formatted_transcript = []
+                for segment in transcript_data["transcript"]:
+                    formatted_transcript.append(f"[{segment['start_time_formatted']}] Speaker {segment['speaker']}: {segment['text']}")
+                
+                # Join the formatted transcript lines
+                full_transcript = "\n".join(formatted_transcript)
+                
+                # Store in session state
+                st.session_state.transcript_content = full_transcript
+                st.session_state.audio_transcript = transcript_data
+                st.session_state.audio_processing_complete = True
+                
+                # Clean up the temporary file
+                os.unlink(audio_path)
+                
+                # Update progress to 100%
+                update_progress(100, "Audio processing complete!")
+                update_ui_progress()
+                
+                # Display success message with language info
+                if st.session_state.detected_language:
+                    st.success(f"Audio processing complete! Detected language: {st.session_state.detected_language}. The transcript is ready for summarization.")
+                else:
+                    st.success("Audio processing complete! The transcript is ready for summarization.")
                     
-                    # Store the detected language
-                    st.session_state.detected_language = transcript_data.get('language', 'auto-detected')
-                    
-                    # Format the transcript for display and processing
-                    formatted_transcript = []
-                    for segment in transcript_data["transcript"]:
-                        formatted_transcript.append(f"[{segment['start_time_formatted']}] Speaker {segment['speaker']}: {segment['text']}")
-                    
-                    # Join the formatted transcript lines
-                    full_transcript = "\n".join(formatted_transcript)
-                    
-                    # Store in session state
-                    st.session_state.transcript_content = full_transcript
-                    st.session_state.audio_transcript = transcript_data
-                    st.session_state.audio_processing_complete = True
-                    
-                    # Clean up the temporary file
-                    os.unlink(audio_path)
-                    
-                    # Display success message with language info
-                    if st.session_state.detected_language:
-                        st.success(f"Audio processing complete! Detected language: {st.session_state.detected_language}. The transcript is ready for summarization.")
-                    else:
-                        st.success("Audio processing complete! The transcript is ready for summarization.")
-                        
-                except Exception as e:
-                    st.error(f"Error processing audio: {str(e)}")
-                    st.error(traceback.format_exc())
+            except Exception as e:
+                st.error(f"Error processing audio: {str(e)}")
+                st.error(traceback.format_exc())
+                
+            # Remove progress indicators after completion
+            time.sleep(1)  # Give user time to see 100%
+            progress_bar.empty()
+            status_text.empty()
     
     # If audio has been processed, show a preview
     if st.session_state.audio_processing_complete:
@@ -378,72 +451,122 @@ if submit_button:
 
     # Process if we have both transcript and participants
     if process_transcript and final_transcript and participants:
-        with st.spinner("Processing your meeting transcript..."):
-            # Call the meeting summarizer with language information
-            try:
-                # For audio input, pass the detected language to summarize_meeting
+        # Set up progress tracking for summarization
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        status_text.text("Starting summarization...")
+        
+        # Reset processing progress
+        st.session_state.processing_progress = 0
+        st.session_state.processing_status = "Starting summarization..."
+        
+        # Update the UI with progress
+        def update_ui_progress():
+            progress_bar.progress(st.session_state.processing_progress / 100)
+            status_text.text(st.session_state.processing_status)
+        
+        try:
+            # For long recordings, use the hierarchical summarization
+            if st.session_state.is_long_recording and input_method == "Upload Audio":
+                update_status = lambda p, s: update_progress(p, s)
+                
+                # Call the long meeting summarizer with transcript data
+                result = summarize_long_meeting(
+                    st.session_state.audio_transcript["transcript"],
+                    language=st.session_state.detected_language,
+                    progress_callback=update_status
+                )
+                
+                # Update UI after each step
+                update_ui_progress()
+            else:
+                # For regular recordings, use the standard summarizer
+                # Call the meeting summarizer with language information
                 if input_method == "Upload Audio" and st.session_state.detected_language:
+                    # Simulate progress updates for standard processing
+                    for i in range(5):
+                        update_progress(i * 20, f"Summarizing... {i * 20}%")
+                        update_ui_progress()
+                        time.sleep(0.3)  # Just for UI feedback
+                        
                     result = summarize_meeting(final_transcript, participants, 
                                               language=st.session_state.detected_language)
                 else:
+                    # Simulate progress updates for standard processing
+                    for i in range(5):
+                        update_progress(i * 20, f"Summarizing... {i * 20}%")
+                        update_ui_progress()
+                        time.sleep(0.3)  # Just for UI feedback
+                        
                     result = summarize_meeting(final_transcript, participants)
-                    
-                st.session_state.meeting_result = result
-                
-                # Display success message
-                st.success("✅ Summary generated successfully!")
-                
-                # Generate speaker summaries
-                with st.spinner("Generating speaker-specific summaries..."):
-                    try:
-                        # Generate speaker summaries with language support
-                        if input_method == "Upload Audio" and st.session_state.detected_language:
-                            speaker_summaries = generate_speaker_summaries(
-                                final_transcript, 
-                                participants,
-                                language=st.session_state.detected_language
-                            )
-                        else:
-                            speaker_summaries = generate_speaker_summaries(final_transcript, participants)
-                            
-                        st.session_state.speaker_summaries = speaker_summaries
-                    except Exception as e:
-                        st.error(f"Error generating speaker summaries: {str(e)}")
-                
-                # Add download buttons for JSON export and transcript
-                st.download_button(
-                    label="Download Summary & Action Items (JSON)",
-                    data=json.dumps({
-                        "meeting_summary": result["meeting_summary"],
-                        "action_items": result["action_items"],
-                        "speaker_summaries": st.session_state.speaker_summaries if st.session_state.speaker_summaries else {},
+            
+            st.session_state.meeting_result = result
+            
+            # Update progress to 100%
+            update_progress(100, "Summary generated successfully!")
+            update_ui_progress()
+            
+            # Display success message
+            st.success("✅ Summary generated successfully!")
+            
+            # Generate speaker summaries
+            with st.spinner("Generating speaker-specific summaries..."):
+                try:
+                    # Generate speaker summaries with language support
+                    if input_method == "Upload Audio" and st.session_state.detected_language:
+                        speaker_summaries = generate_speaker_summaries(
+                            final_transcript, 
+                            participants,
+                            language=st.session_state.detected_language
+                        )
+                    else:
+                        speaker_summaries = generate_speaker_summaries(final_transcript, participants)
+                        
+                    st.session_state.speaker_summaries = speaker_summaries
+                except Exception as e:
+                    st.error(f"Error generating speaker summaries: {str(e)}")
+            
+            # Add download buttons for JSON export and transcript
+            st.download_button(
+                label="Download Summary & Action Items (JSON)",
+                data=json.dumps({
+                    "meeting_summary": result["meeting_summary"],
+                    "action_items": result["action_items"],
+                    "speaker_summaries": st.session_state.speaker_summaries if st.session_state.speaker_summaries else {},
+                    "language": st.session_state.detected_language,
+                    "metadata": {
                         "language": st.session_state.detected_language,
-                        "metadata": {
-                            "language": st.session_state.detected_language,
-                            "input_method": input_method,
-                            "participant_count": len(participants)
-                        }
-                    }, indent=2),
-                    file_name="meeting_summary.json",
-                    mime="application/json"
+                        "input_method": input_method,
+                        "participant_count": len(participants),
+                        "is_long_recording": st.session_state.is_long_recording
+                    }
+                }, indent=2),
+                file_name="meeting_summary.json",
+                mime="application/json"
+            )
+            
+            # If this was from audio, offer the transcript download as well
+            if input_method == "Upload Audio":
+                st.download_button(
+                    label="Download Transcript (TXT)",
+                    data=final_transcript,
+                    file_name="meeting_transcript.txt",
+                    mime="text/plain"
                 )
                 
-                # If this was from audio, offer the transcript download as well
-                if input_method == "Upload Audio":
-                    st.download_button(
-                        label="Download Transcript (TXT)",
-                        data=final_transcript,
-                        file_name="meeting_transcript.txt",
-                        mime="text/plain"
-                    )
-                    
-                # Reset to default tab
-                st.session_state.current_tab = "Meeting Summary"
+            # Reset to default tab
+            st.session_state.current_tab = "Meeting Summary"
                 
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-                st.expander("See detailed error trace").write(traceback.format_exc())
-                st.info("💡 Tips to fix this error: Check that your OpenAI API key is valid and has sufficient credits. Make sure your meeting transcript is properly formatted with speaker names.")
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+            st.expander("See detailed error trace").write(traceback.format_exc())
+            st.info("💡 Tips to fix this error: Check that your OpenAI API key is valid and has sufficient credits. Make sure your meeting transcript is properly formatted with speaker names.")
+        
+        # Remove progress indicators after completion
+        time.sleep(1)  # Give user time to see 100%
+        progress_bar.empty()
+        status_text.empty()
+        
     elif submit_button and (not final_transcript or not participants):
         st.warning("Both transcript and participants are required to generate a summary.")
 
@@ -469,7 +592,19 @@ with st.sidebar:
     - For text transcripts, include speaker names (e.g., "Alice: Hello everyone")
     - The app will automatically detect participants from the transcript or audio
     - For more accurate action items, make sure assignments and deadlines are clearly stated
-    - Longer transcripts may take more time to process
+    - For longer meetings (>15 minutes), check the "This is a long recording" option
+    """)
+    
+    # Add information about long recordings
+    st.header("Processing Long Recordings")
+    st.markdown("""
+    For meetings longer than 15 minutes, we recommend:
+    
+    1. Checking the "This is a long recording" option
+    2. Being patient during processing (it may take several minutes)
+    3. Ensuring your computer doesn't go to sleep during processing
+    
+    Long recordings are processed in chunks to handle meetings of any duration.
     """)
     
     # Add information about file uploads and participant detection

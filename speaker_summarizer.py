@@ -15,7 +15,7 @@ def generate_speaker_summaries(transcript, participants, language=None):
         dict: Dictionary mapping each speaker to their summary
     """
     # Initialize the LLM
-    llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key="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")
+    llm = ChatOpenAI(model="gpt-4o", temperature=0)
     
     # Group transcript segments by speaker
     speaker_contributions = {}
