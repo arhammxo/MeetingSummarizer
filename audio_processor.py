@@ -3,6 +3,7 @@ from pyannote.audio import Pipeline
 from pyannote.audio.pipelines.utils.hook import ProgressHook
 import torch
 import os
+import numpy as np
 import librosa
 import time
 from datetime import datetime
@@ -34,15 +35,15 @@ def transcribe_audio(audio_file, language=None):
     if language:
         result = model.transcribe(audio, language=language)
     else:
-        # Detect language then transcribe
-        # First, detect the language
-        audio_sample = audio[:48000]  # Use a short sample for detection
-        detection_result = model.detect_language(audio_sample)
-        detected_language = detection_result[0]
-        
-        # Then transcribe with the detected language
-        result = model.transcribe(audio, language=detected_language)
-        print(f"Detected language: {detected_language}")
+        try:
+            # Convert audio to torch tensor
+            audio_tensor = torch.tensor(audio)
+            result = model.transcribe(audio)
+        except Exception as e:
+            print(f"Error in language detection: {str(e)}")
+            # Fallback to English if detection fails
+            result = model.transcribe(audio, language="en")
+            print("Falling back to English transcription")
     
     return result["segments"]  # Contains 'start', 'end', 'text'
 

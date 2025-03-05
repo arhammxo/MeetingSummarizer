@@ -1,15 +1,15 @@
-import os
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-def generate_speaker_summaries(transcript, participants):
+def generate_speaker_summaries(transcript, participants, language=None):
     """
     Generate individual summaries for each speaker in the meeting.
     
     Args:
         transcript (str): The full meeting transcript
         participants (list): List of participant names/identifiers
+        language (str, optional): Language code (e.g., 'hi' for Hindi) to generate summaries in
         
     Returns:
         dict: Dictionary mapping each speaker to their summary
@@ -37,6 +37,17 @@ def generate_speaker_summaries(transcript, participants):
         if speaker_lines:
             speaker_contributions[participant] = '\n'.join(speaker_lines)
     
+    # Language-specific instructions
+    language_instructions = ""
+    if language:
+        if language == "hi":
+            language_instructions = "Generate your response in Hindi language using Hindi script (Devanagari)."
+        elif language == "en":
+            language_instructions = "Generate your response in English."
+        else:
+            # For other languages, specify to respond in that language
+            language_instructions = f"Generate your response in the {language} language."
+    
     # Create a prompt template for generating speaker summaries
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are an expert meeting analyst. Your task is to create a concise 
@@ -55,6 +66,8 @@ def generate_speaker_summaries(transcript, participants):
         - "brief_summary": A 1-2 sentence summary of their overall participation
         
         Keep your response focused only on this speaker's contributions.
+        
+        {language_instructions}
         """),
         ("human", """Speaker: {speaker}
         
@@ -75,7 +88,8 @@ def generate_speaker_summaries(transcript, participants):
             try:
                 summary = chain.invoke({
                     "speaker": speaker,
-                    "contributions": contributions
+                    "contributions": contributions,
+                    "language_instructions": language_instructions
                 })
                 speaker_summaries[speaker] = summary
             except Exception as e:

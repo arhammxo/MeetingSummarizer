@@ -379,9 +379,15 @@ if submit_button:
     # Process if we have both transcript and participants
     if process_transcript and final_transcript and participants:
         with st.spinner("Processing your meeting transcript..."):
-            # Call the meeting summarizer
+            # Call the meeting summarizer with language information
             try:
-                result = summarize_meeting(final_transcript, participants)
+                # For audio input, pass the detected language to summarize_meeting
+                if input_method == "Upload Audio" and st.session_state.detected_language:
+                    result = summarize_meeting(final_transcript, participants, 
+                                              language=st.session_state.detected_language)
+                else:
+                    result = summarize_meeting(final_transcript, participants)
+                    
                 st.session_state.meeting_result = result
                 
                 # Display success message
@@ -390,8 +396,16 @@ if submit_button:
                 # Generate speaker summaries
                 with st.spinner("Generating speaker-specific summaries..."):
                     try:
-                        # Generate speaker summaries
-                        speaker_summaries = generate_speaker_summaries(final_transcript, participants)
+                        # Generate speaker summaries with language support
+                        if input_method == "Upload Audio" and st.session_state.detected_language:
+                            speaker_summaries = generate_speaker_summaries(
+                                final_transcript, 
+                                participants,
+                                language=st.session_state.detected_language
+                            )
+                        else:
+                            speaker_summaries = generate_speaker_summaries(final_transcript, participants)
+                            
                         st.session_state.speaker_summaries = speaker_summaries
                     except Exception as e:
                         st.error(f"Error generating speaker summaries: {str(e)}")
@@ -403,7 +417,12 @@ if submit_button:
                         "meeting_summary": result["meeting_summary"],
                         "action_items": result["action_items"],
                         "speaker_summaries": st.session_state.speaker_summaries if st.session_state.speaker_summaries else {},
-                        "language": st.session_state.detected_language
+                        "language": st.session_state.detected_language,
+                        "metadata": {
+                            "language": st.session_state.detected_language,
+                            "input_method": input_method,
+                            "participant_count": len(participants)
+                        }
                     }, indent=2),
                     file_name="meeting_summary.json",
                     mime="application/json"
