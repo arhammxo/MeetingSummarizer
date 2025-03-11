@@ -17,12 +17,12 @@ if not os.environ.get("OPENAI_API_KEY"):
     st.warning("⚠️ OpenAI API key not found! Set it with 'export OPENAI_API_KEY=your-key' before running this app.")
 
 st.set_page_config(
-    page_title="Meeting Summarizer & Action Item Generator",
+    page_title="On-Premise Meeting Summarizer",
     page_icon="📝",
     layout="wide"
 )
 
-st.title("Meeting Summarizer & Action Item Generator")
+st.title("On-Premise Meeting Summarizer")
 st.subheader("Convert your meeting recordings or transcripts into concise summaries and actionable tasks")
 
 def extract_participants(transcript):
