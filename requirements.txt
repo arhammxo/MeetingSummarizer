@@ -1,17 +1,18 @@
 # Core dependencies
-langgraph>=0.0.25
-langchain>=0.1.0
-langchain-openai>=0.0.5
-pydantic>=2.0.0
+langgraph
+langchain
+langchain-openai
+pydantic
 
 # UI dependencies
-streamlit>=1.30.0
+streamlit
 
 # Audio processing dependencies
-whisper>=1.0.0
-pyannote.audio>=3.1.0
-torch>=2.0.0
-librosa>=0.10.0
+openai-whisper
+pyannote.audio
+pydub
+
+librosa
 
 # Utilities
-python-dotenv>=1.0.0
+python-dotenv
