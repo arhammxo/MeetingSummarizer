@@ -20,9 +20,30 @@ try:
     from core.speaker_summarizer import generate_speaker_summaries as ss_generate_speaker_summaries
     from core.summarize_long_transcripts import summarize_long_meeting as slt_summarize_long_meeting
     logger.info("Successfully imported core summarization modules")
+    
+    # Import the multilingual summarizer module
+    try:
+        from core.multilingual_summarizer import summarize_meeting_multilingual, get_language_name
+        logger.info("Successfully imported multilingual summarizer module")
+        HAS_MULTILINGUAL = True
+    except ImportError as e:
+        logger.warning(f"Multilingual summarizer not available: {str(e)}")
+        HAS_MULTILINGUAL = False
+        
+    # Create a simple fallback get_language_name if not imported
+    if not HAS_MULTILINGUAL:
+        def get_language_name(language_code):
+            language_map = {
+                "hi": "Hindi", "en": "English", "es": "Spanish", "fr": "French", 
+                "de": "German", "zh": "Chinese", "ja": "Japanese", "ru": "Russian", 
+                "ar": "Arabic", "auto": "Auto-detected", None: "English"
+            }
+            return language_map.get(language_code, "English")
+        
 except ImportError as e:
     logger.error(f"Error importing core modules: {str(e)}")
     logger.warning("Using mock implementations as fallback")
+    HAS_MULTILINGUAL = False
     
     # Mock implementations for fallback
     def lg_summarize_meeting(transcript, participants, language=None):
@@ -38,6 +59,20 @@ except ImportError as e:
                 {"action": "Mock action", "assignee": "Mock Person", "due_date": "Tomorrow", "priority": "high"}
             ]
         }
+    
+    def summarize_meeting_multilingual(transcript, participants, language):
+        """Mock implementation of multilingual summarizer"""
+        logger.warning(f"Using mock implementation of multilingual summarizer for {language}!")
+        return lg_summarize_meeting(transcript, participants)
+    
+    def get_language_name(language_code):
+        """Simple language name getter"""
+        language_map = {
+            "hi": "Hindi", "en": "English", "es": "Spanish", "fr": "French", 
+            "de": "German", "zh": "Chinese", "ja": "Japanese", "ru": "Russian", 
+            "ar": "Arabic", "auto": "Auto-detected", None: "English"
+        }
+        return language_map.get(language_code, "English")
     
     def ss_generate_speaker_summaries(transcript, participants, language=None):
         """Mock implementation for documentation"""
@@ -72,6 +107,115 @@ except ImportError as e:
             }
         }
 
+# Custom implementation of multilingual speaker summaries
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+
+def generate_speaker_summaries_multilingual(transcript, participants, language):
+    """
+    Generate speaker summaries in the specified language
+    
+    Args:
+        transcript (str): Meeting transcript
+        participants (list): List of participant names
+        language (str): Language code or name
+    
+    Returns:
+        dict: Speaker summaries in the specified language
+    """
+    # If no specific language, English, or no LangChain, use the original function
+    if not language or language.lower() == "en" or language.lower() == "english":
+        return ss_generate_speaker_summaries(transcript, participants)
+    
+    try:
+        # Get proper language name for instructions
+        language_name = get_language_name(language)
+        
+        # Initialize the LLM with increased temperature for better multilingual generation
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+        
+        # Create a prompt template for generating multilingual speaker summaries
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", f"""You are an expert meeting analyst working with {language_name} content.
+            Your task is to create a concise summary of what a specific participant contributed to a meeting.
+            ALL YOUR OUTPUT MUST BE IN {language_name} ONLY.
+            
+            Focus on:
+            1. Main points they raised
+            2. Questions they asked
+            3. Action items they took on or assigned
+            4. Key decisions they influenced
+            5. Their primary concerns or interests
+            
+            Format your response as a JSON object with these keys:
+            - "key_contributions": List of 2-4 main points they contributed (IN {language_name})
+            - "action_items": List of any tasks they agreed to do or assigned (IN {language_name})
+            - "questions_raised": List of important questions they asked, if any (IN {language_name})
+            - "brief_summary": A 1-2 sentence summary of their overall participation (IN {language_name})
+            
+            Keep your response focused only on this speaker's contributions.
+            If the transcript contains English or any other language, translate your response to {language_name}.
+            """),
+            ("human", """Speaker: {speaker}
+            
+            Their contributions:
+            {contributions}
+            
+            Please summarize this speaker's participation in the meeting in {language_name} language.""")
+        ])
+        
+        # Create the chain with JSON output
+        chain = prompt | llm | JsonOutputParser()
+        
+        # Group transcript segments by speaker
+        speaker_contributions = {}
+        
+        # Process the transcript to group text by speaker
+        for participant in participants:
+            # Create a pattern to match this speaker's lines
+            speaker_pattern = f"{participant}:"
+            
+            # Find all lines from this speaker
+            speaker_lines = []
+            for line in transcript.split('\n'):
+                if speaker_pattern in line:
+                    # Extract just the text (remove speaker prefix)
+                    text = line.split(speaker_pattern, 1)[1].strip()
+                    speaker_lines.append(text)
+            
+            # Store all this speaker's contributions
+            if speaker_lines:
+                speaker_contributions[participant] = '\n'.join(speaker_lines)
+        
+        # Generate summaries for each speaker
+        speaker_summaries = {}
+        
+        for speaker, contributions in speaker_contributions.items():
+            if contributions.strip():  # Only process if they have actual contributions
+                try:
+                    summary = chain.invoke({
+                        "speaker": speaker,
+                        "contributions": contributions,
+                        "language_name": language_name
+                    })
+                    speaker_summaries[speaker] = summary
+                except Exception as e:
+                    logger.error(f"Error generating multilingual summary for {speaker}: {str(e)}")
+                    # Fallback in case of parsing errors
+                    speaker_summaries[speaker] = {
+                        "key_contributions": ["Error processing contributions"],
+                        "action_items": [],
+                        "questions_raised": [],
+                        "brief_summary": f"Error generating summary for {speaker}: {str(e)}"
+                    }
+        
+        return speaker_summaries
+    except Exception as e:
+        logger.error(f"Error in multilingual speaker summarization: {str(e)}")
+        # Fall back to the original function
+        return ss_generate_speaker_summaries(transcript, participants)
+
 def summarize_meeting(
     transcript: str, 
     participants: List[str], 
@@ -100,10 +244,23 @@ def summarize_meeting(
         if not participants or len(participants) == 0:
             raise ValueError("Participants list cannot be empty")
         
-        # Call the core summarization function
-        result = lg_summarize_meeting(transcript, participants, language)
+        # Use multilingual summarizer if a language is specified (other than English)
+        if HAS_MULTILINGUAL and language and language.lower() not in ["en", "english"]:
+            logger.info(f"Using multilingual summarizer for language: {language}")
+            result = summarize_meeting_multilingual(transcript, participants, language)
+        else:
+            # Call the core summarization function
+            logger.info(f"Using standard summarizer with language: {language if language else 'default'}")
+            result = lg_summarize_meeting(transcript, participants, language)
         
         logger.info(f"Meeting summarized in {time.time() - start_time:.2f} seconds")
+        
+        # Add language info to result
+        if "metadata" not in result:
+            result["metadata"] = {}
+        result["metadata"]["language"] = language or "en"
+        result["metadata"]["language_name"] = get_language_name(language)
+        
         return result
     except Exception as e:
         logger.error(f"Error summarizing meeting: {str(e)}", exc_info=True)
@@ -136,9 +293,15 @@ def generate_speaker_summaries(
         
         if not participants or len(participants) == 0:
             raise ValueError("Participants list cannot be empty")
-            
-        # Call the core speaker summarization function
-        result = ss_generate_speaker_summaries(transcript, participants, language)
+        
+        # Use multilingual speaker summarizer if a language is specified (other than English)
+        if language and language.lower() not in ["en", "english"]:
+            logger.info(f"Using multilingual speaker summarizer for language: {language}")
+            result = generate_speaker_summaries_multilingual(transcript, participants, language)
+        else:
+            # Call the core speaker summarization function
+            logger.info(f"Using standard speaker summarizer with language: {language if language else 'default'}")
+            result = ss_generate_speaker_summaries(transcript, participants, language)
         
         logger.info(f"Speaker summaries generated in {time.time() - start_time:.2f} seconds")
         return result
@@ -172,7 +335,14 @@ def summarize_long_meeting(
             raise ValueError("Transcript data cannot be empty")
         
         # Call the core long meeting summarization function
+        # Note: The core function already supports multilingual summaries internally
         result = slt_summarize_long_meeting(transcript_data, language, progress_callback)
+        
+        # Add language info to result
+        if "metadata" not in result:
+            result["metadata"] = {}
+        result["metadata"]["language"] = language or "en"
+        result["metadata"]["language_name"] = get_language_name(language)
         
         logger.info(f"Long meeting summarized in {time.time() - start_time:.2f} seconds")
         return result
