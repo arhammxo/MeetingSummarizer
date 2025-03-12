@@ -1,8 +1,7 @@
 import os
 from typing import List, Optional
-from pydantic import validator
+from pydantic import BaseSettings, validator
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
 
 # Load .env file if it exists
 load_dotenv()
@@ -10,8 +9,19 @@ load_dotenv()
 class Settings(BaseSettings):
     """Application settings configured via environment variables"""
     
-    # API Keys
-    OPENAI_API_KEY: str
+    # LLM Configuration
+    LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
+    
+    # OpenAI Configuration (legacy, can be removed if fully migrating)
+    OPENAI_API_KEY: Optional[str] = None
+    
+    # Ollama Configuration
+    OLLAMA_API_BASE: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "mistral"  # Default model
+    OLLAMA_SUMMARIZATION_MODEL: str = "mistral"  # For summarization
+    OLLAMA_MULTILINGUAL_MODEL: str = "llama3"  # For multilingual support
+    
+    # Audio Processing
     HUGGINGFACE_TOKEN: str = "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"
     
     # Storage
@@ -37,13 +47,17 @@ class Settings(BaseSettings):
             return ["*"]
         return [i.strip() for i in v.split(",") if i.strip()]
     
-    @validator("OPENAI_API_KEY")
-    def validate_openai_key(cls, v):
-        if not v or v == "your-openai-api-key-here":
+    @validator("LLM_PROVIDER")
+    def validate_llm_provider(cls, v, values):
+        if v not in ["openai", "ollama"]:
+            raise ValueError(f"LLM_PROVIDER must be 'openai' or 'ollama', got {v}")
+        
+        # If using OpenAI, validate API key
+        if v == "openai" and not values.get("OPENAI_API_KEY"):
             raise ValueError(
-                "OPENAI_API_KEY environment variable is not set. "
-                "Please set this variable with your OpenAI API key."
+                "OPENAI_API_KEY environment variable is required when LLM_PROVIDER is 'openai'"
             )
+            
         return v
     
     class Config:
@@ -56,8 +70,9 @@ settings = Settings()
 # Ensure storage directory exists
 os.makedirs(settings.STORAGE_DIR, exist_ok=True)
 
-# Set OpenAI API key in environment for modules that expect it there
-os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
+# Set OpenAI API key in environment if using OpenAI
+if settings.LLM_PROVIDER == "openai" and settings.OPENAI_API_KEY:
+    os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
 
 def get_settings():
     """Function to get settings (can be used as dependency in FastAPI)"""

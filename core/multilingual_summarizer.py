@@ -1,7 +1,7 @@
 from lg import summarize_meeting as original_summarize_meeting
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
 
 def summarize_meeting_multilingual(transcript, participants, language=None):
     """
@@ -23,34 +23,35 @@ def summarize_meeting_multilingual(transcript, participants, language=None):
     language_name = get_language_name(language)
     
     # Initialize the LLM with increased temperature for better multilingual generation
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+    llm = get_llm(temperature=0.2, purpose="multilingual")
     
     # First, get the meeting summary
-    summary_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are an expert meeting summarizer working with {language_name} content.
-        Your task is to create a meeting summary ENTIRELY IN {language_name}.
+    system_message = f"""You are an expert meeting summarizer working with {language_name} content.
+    Your task is to create a meeting summary ENTIRELY IN {language_name}.
+
+    Based on the meeting transcript, create a concise summary that captures what was discussed and decided.
+
+    Follow this structure:
+    1. Summary: A 2-3 sentence overview of the meeting IN {language_name}
+    2. Key Points: Bullet points of important topics discussed IN {language_name}
+    3. Decisions: Bullet points of decisions made during the meeting IN {language_name}
+
+    Your response must be a JSON object with the fields 'summary', 'key_points', and 'decisions'.
+    ENSURE ALL TEXT IS IN {language_name} ONLY. DO NOT MIX LANGUAGES.
+
+    If the transcript contains English, translate all summary content to {language_name}.
+    """
+
+    user_message = """Meeting Transcript: {transcript}
+
+    Participants: {participants}
+
+    Please summarize this meeting COMPLETELY in {language_name}, ensuring all output is in {language_name} only."""
+
+    summary_prompt = create_chat_prompt_template(system_message, user_message)
         
-        Based on the meeting transcript, create a concise summary that captures what was discussed and decided.
-        
-        Follow this structure:
-        1. Summary: A 2-3 sentence overview of the meeting IN {language_name}
-        2. Key Points: Bullet points of important topics discussed IN {language_name}
-        3. Decisions: Bullet points of decisions made during the meeting IN {language_name}
-        
-        Your response must be a JSON object with the fields 'summary', 'key_points', and 'decisions'.
-        ENSURE ALL TEXT IS IN {language_name} ONLY. DO NOT MIX LANGUAGES.
-        
-        If the transcript contains English, translate all summary content to {language_name}.
-        """),
-        ("human", """Meeting Transcript: {transcript}
-        
-        Participants: {participants}
-        
-        Please summarize this meeting COMPLETELY in {language_name}, ensuring all output is in {language_name} only.""")
-    ])
-    
-    summary_chain = summary_prompt | llm | JsonOutputParser()
-    
+    json_parser = create_output_parser()
+    summary_chain = summary_prompt | llm | json_parser    
     # Then, extract action items
     action_prompt = ChatPromptTemplate.from_messages([
         ("system", f"""You are an expert at identifying action items from meeting transcripts.
@@ -85,12 +86,39 @@ def summarize_meeting_multilingual(transcript, participants, language=None):
     action_chain = action_prompt | llm | JsonOutputParser()
     
     try:
-        # Get meeting summary
-        meeting_summary = summary_chain.invoke({
-            "transcript": transcript,
-            "participants": participants,
-            "language_name": language_name
-        })
+        if len(transcript) > 8000:
+            print(f"Long transcript detected ({len(transcript)} chars), breaking into chunks")
+            chunks = chunk_transcript(transcript)
+            
+            # Get summaries for each chunk
+            chunk_summaries = []
+            for i, chunk in enumerate(chunks):
+                print(f"Processing chunk {i+1}/{len(chunks)}")
+                chunk_result = summary_chain.invoke({
+                    "transcript": chunk,
+                    "participants": participants,
+                    "language_name": language_name
+                })
+                chunk_summaries.append(chunk_result)
+            
+            # Merge summaries
+            meeting_summary = {
+                "summary": " ".join([s.get("summary", "") for s in chunk_summaries]),
+                "key_points": [],
+                "decisions": []
+            }
+            
+            # Collect all key points and decisions
+            for summary in chunk_summaries:
+                meeting_summary["key_points"].extend(summary.get("key_points", []))
+                meeting_summary["decisions"].extend(summary.get("decisions", []))
+        else:
+            # Original code for shorter transcripts
+            meeting_summary = summary_chain.invoke({
+                "transcript": transcript,
+                "participants": participants,
+                "language_name": language_name
+            })
         
         # Get action items
         action_items = action_chain.invoke({
@@ -111,6 +139,56 @@ def summarize_meeting_multilingual(transcript, participants, language=None):
         # If something fails, fall back to the original English function
         print(f"Error generating {language_name} summary: {str(e)}. Falling back to English.")
         return original_summarize_meeting(transcript, participants)
+    
+def chunk_transcript(transcript, max_chunk_size=8000):
+    """
+    Split a long transcript into manageable chunks to avoid context window limitations
+    
+    Args:
+        transcript: The full transcript text
+        max_chunk_size: Maximum size per chunk in characters
+        
+    Returns:
+        List of transcript chunks
+    """
+    if len(transcript) <= max_chunk_size:
+        return [transcript]
+    
+    # Try to split at paragraph boundaries
+    paragraphs = transcript.split('\n\n')
+    chunks = []
+    current_chunk = ""
+    
+    for para in paragraphs:
+        if len(current_chunk) + len(para) + 2 <= max_chunk_size:
+            if current_chunk:
+                current_chunk += '\n\n'
+            current_chunk += para
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            # If a single paragraph is too long, split it at sentence boundaries
+            if len(para) > max_chunk_size:
+                sentences = para.split('. ')
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) + 2 <= max_chunk_size:
+                        if current_chunk:
+                            current_chunk += '. '
+                        current_chunk += sentence
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk + '.')
+                        current_chunk = sentence
+            else:
+                current_chunk = para
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
 
 def get_language_name(language_code):
     """

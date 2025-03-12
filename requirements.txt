@@ -14,11 +14,15 @@ librosa>=0.10.0
 soundfile>=0.12.1
 ffmpeg-python>=0.2.0
 
-# Language models and processing
+# Language models and processing - updated for Ollama
 langchain>=0.0.267
-langchain-openai>=0.0.2
+langchain-community>=0.0.10  # Contains Ollama integration
 langgraph>=0.0.10
-openai>=1.0.0
+langchain-text-splitters>=0.0.1
+langchain-core>=0.1.0
+
+# Remove OpenAI dependency
+# openai>=1.0.0
 
 # Utilities
 python-dotenv>=1.0.0

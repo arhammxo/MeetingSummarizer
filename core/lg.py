@@ -7,6 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field, validator
+import logging
 
 # Define the state of our graph
 class ActionItem(BaseModel):
@@ -36,10 +37,54 @@ class AgentState(TypedDict):
 # Initialize our LLM
 def get_llm():
     """Get the language model"""
-    return ChatOpenAI(model="gpt-4o", temperature=0)
+    from services.llm_service import get_llm as get_llm_service
+    return get_llm_service(temperature=0, purpose="summarization")
+
+def merge_analyses(analyses):
+    """
+    Merge multiple chunk analyses into a single cohesive analysis
+    
+    Args:
+        analyses: List of analysis dictionaries from different chunks
+        
+    Returns:
+        Merged analysis dictionary
+    """
+    if not analyses:
+        return {}
+    
+    if len(analyses) == 1:
+        return analyses[0]
+    
+    # Initialize with the first analysis
+    merged = {
+        "meeting_purpose": analyses[0].get("meeting_purpose", ""),
+        "main_topics": [],
+        "emotional_tone": analyses[0].get("emotional_tone", ""),
+        "participation_level": analyses[0].get("participation_level", ""),
+        "disagreement_areas": []
+    }
+    
+    # Collect all topics and disagreement areas
+    all_topics = set()
+    all_disagreements = set()
+    
+    for analysis in analyses:
+        # Add topics
+        for topic in analysis.get("main_topics", []):
+            all_topics.add(topic)
+        
+        # Add disagreement areas
+        for area in analysis.get("disagreement_areas", []):
+            all_disagreements.add(area)
+    
+    # Update merged analysis
+    merged["main_topics"] = list(all_topics)
+    merged["disagreement_areas"] = list(all_disagreements)
+    
+    return merged
 
 # Define the nodes for our graph
-
 def create_analyze_node(language=None):
     """Create the analyze node with language-specific instructions"""
     language_instructions = ""
@@ -50,33 +95,122 @@ def create_analyze_node(language=None):
             language_instructions = f"Respond in {language} language."
     
     # 1. Analyze the transcript
-    analyze_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are an expert meeting analyst. Analyze the provided meeting transcript 
-        and identify the following elements:
-        - Meeting purpose
-        - Main topics discussed
-        - Emotional tone of the meeting
-        - Level of participation across attendees
-        - Any areas of disagreement or conflict
-        
-        Provide your analysis in a structured JSON format.
-        
-        {language_instructions}"""),
-        ("human", "Here is the meeting transcript: {transcript}\n\nParticipants: {participants}")
-    ])
+    from services.llm_service import create_chat_prompt_template
+
+    system_message = f"""You are an expert meeting analyst. Analyze the provided meeting transcript 
+    and identify the following elements:
+    - Meeting purpose
+    - Main topics discussed
+    - Emotional tone of the meeting
+    - Level of participation across attendees
+    - Any areas of disagreement or conflict
+
+    Provide your analysis in a structured JSON format.
+
+    {language_instructions}"""
+
+    user_message = "Here is the meeting transcript: {transcript}\n\nParticipants: {participants}"
+    analyze_prompt = create_chat_prompt_template(system_message, user_message)
     
     llm = get_llm()
-    analyze_chain = analyze_prompt | llm | JsonOutputParser()
+    from services.llm_service import create_output_parser
+    json_parser = create_output_parser()
+    analyze_chain = analyze_prompt | llm | json_parser
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript to understand context and participants."""
-        analysis = analyze_chain.invoke({
-            "transcript": state["transcript"],
-            "participants": state["participants"]
-        })
-        return {**state, "analysis": analysis, "current_step": "summarize"}
+        try:
+            transcript = state["transcript"]
+            participants = state["participants"]
+            
+            # For shorter transcripts, process directly
+            if len(transcript) < 8000:
+                analysis = analyze_chain.invoke({
+                    "transcript": transcript,
+                    "participants": participants
+                })
+                return {**state, "analysis": analysis, "current_step": "summarize"}
+            
+            # For longer transcripts, split into chunks and analyze separately
+            chunks = chunk_transcript(transcript)
+            logging.info(f"Splitting long transcript into {len(chunks)} chunks")
+            
+            # Analyze each chunk
+            chunk_analyses = []
+            for i, chunk in enumerate(chunks):
+                logging.info(f"Analyzing chunk {i+1}/{len(chunks)}")
+                chunk_analysis = analyze_chain.invoke({
+                    "transcript": chunk,
+                    "participants": participants
+                })
+                chunk_analyses.append(chunk_analysis)
+            
+            # Merge analyses
+            merged_analysis = merge_analyses(chunk_analyses)
+            return {**state, "analysis": merged_analysis, "current_step": "summarize"}
+        except Exception as e:
+            logging.error(f"Error analyzing transcript: {str(e)}")
+            # Return a basic analysis to avoid breaking the workflow
+            basic_analysis = {
+                "meeting_purpose": "Unable to determine due to processing error",
+                "main_topics": ["Error in analysis"],
+                "emotional_tone": "Unknown",
+                "participation_level": "Unknown",
+                "disagreement_areas": []
+            }
+            return {**state, "analysis": basic_analysis, "current_step": "summarize"}
     
     return analyze_node
+
+def chunk_transcript(transcript, max_chunk_size=8000):
+    """
+    Split a long transcript into manageable chunks to avoid context window limitations
+    
+    Args:
+        transcript: The full transcript text
+        max_chunk_size: Maximum size per chunk in characters
+        
+    Returns:
+        List of transcript chunks
+    """
+    if len(transcript) <= max_chunk_size:
+        return [transcript]
+    
+    # Try to split at paragraph boundaries
+    paragraphs = transcript.split('\n\n')
+    chunks = []
+    current_chunk = ""
+    
+    for para in paragraphs:
+        if len(current_chunk) + len(para) + 2 <= max_chunk_size:
+            if current_chunk:
+                current_chunk += '\n\n'
+            current_chunk += para
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            # If a single paragraph is too long, split it at sentence boundaries
+            if len(para) > max_chunk_size:
+                sentences = para.split('. ')
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) + 2 <= max_chunk_size:
+                        if current_chunk:
+                            current_chunk += '. '
+                        current_chunk += sentence
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk + '.')
+                        current_chunk = sentence
+            else:
+                current_chunk = para
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
 
 def create_summarize_node(language=None):
     """Create the summarize node with language-specific instructions"""

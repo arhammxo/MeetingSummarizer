@@ -1,0 +1,114 @@
+"""
+LLM Service - Factory for creating LLM instances based on configuration
+"""
+import logging
+from typing import Optional, Dict, Any
+from config import settings
+
+logger = logging.getLogger("llm-service")
+
+def get_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general"):
+    """
+    Factory function to get a configured LLM based on settings
+    
+    Args:
+        temperature: Temperature setting for the LLM
+        model_name: Specific model to use (overrides defaults)
+        purpose: What the LLM will be used for ("general", "summarization", "multilingual")
+        
+    Returns:
+        A configured LLM instance
+    """
+    provider = settings.LLM_PROVIDER.lower()
+    
+    if provider == "openai":
+        return get_openai_llm(temperature, model_name)
+    elif provider == "ollama":
+        return get_ollama_llm(temperature, model_name, purpose)
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}")
+
+def get_openai_llm(temperature: float = 0, model_name: Optional[str] = None):
+    """Get an OpenAI LLM instance"""
+    try:
+        from langchain_openai import ChatOpenAI
+        
+        return ChatOpenAI(
+            model=model_name or "gpt-4o",
+            temperature=temperature
+        )
+    except ImportError:
+        logger.error("langchain_openai not installed. Run: pip install langchain-openai")
+        raise
+
+def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general"):
+    """Get an Ollama LLM instance"""
+    try:
+        from langchain_community.llms import Ollama
+        
+        # Select the appropriate model based on purpose
+        if not model_name:
+            if purpose == "summarization":
+                model_name = settings.OLLAMA_SUMMARIZATION_MODEL
+            elif purpose == "multilingual":
+                model_name = settings.OLLAMA_MULTILINGUAL_MODEL
+            else:
+                model_name = settings.OLLAMA_MODEL
+        
+        logger.info(f"Creating Ollama LLM with model: {model_name}, purpose: {purpose}")
+        
+        return Ollama(
+            base_url=settings.OLLAMA_API_BASE,
+            model=model_name,
+            temperature=temperature,
+            # Add custom stop tokens to mimic OpenAI behavior
+            stop=["<human>", "<assistant>"],
+            # Timeout settings
+            request_timeout=120.0
+        )
+    except ImportError:
+        logger.error("langchain_community not installed. Run: pip install langchain-community")
+        raise
+
+def create_chat_prompt_template(system_prompt, user_prompt):
+    """
+    Create a chat prompt template that works with both OpenAI and Ollama
+    
+    Args:
+        system_prompt: System prompt text
+        user_prompt: User prompt text
+        
+    Returns:
+        A prompt template instance
+    """
+    try:
+        from langchain_core.prompts import ChatPromptTemplate
+        
+        if settings.LLM_PROVIDER == "openai":
+            # OpenAI supports system messages
+            return ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", user_prompt)
+            ])
+        else:
+            # For Ollama, combine system and user prompts
+            combined_prompt = f"<system>\n{system_prompt}\n</system>\n\n<human>\n{user_prompt}\n</human>\n\n<assistant>"
+            return ChatPromptTemplate.from_template(combined_prompt)
+    except ImportError:
+        logger.error("langchain_core not installed. Run: pip install langchain-core")
+        raise
+
+def create_output_parser():
+    """
+    Create an appropriate output parser based on the LLM provider
+    
+    Returns:
+        A configured output parser
+    """
+    try:
+        from langchain_core.output_parsers import JsonOutputParser
+        
+        return JsonOutputParser()
+    except ImportError:
+        logger.error("langchain_core not installed. Run: pip install langchain-core")
+        raise
