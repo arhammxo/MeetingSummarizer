@@ -1,18 +1,27 @@
 # Core dependencies
-langgraph
-langchain
-langchain-openai
-pydantic
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+pydantic>=1.10.7
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+jinja2>=3.1.2
 
-# UI dependencies
-streamlit
+# Audio processing
+openai-whisper>=20230314
+pyannote.audio>=2.1.1
+pydub>=0.25.1
+librosa>=0.10.0
+soundfile>=0.12.1
+ffmpeg-python>=0.2.0
 
-# Audio processing dependencies
-openai-whisper
-pyannote.audio
-pydub
-
-librosa
+# Language models and processing
+langchain>=0.0.267
+langchain-openai>=0.0.2
+langgraph>=0.0.10
+openai>=1.0.0
 
 # Utilities
-python-dotenv
+python-dotenv>=1.0.0
+aiofiles>=23.1.0
+tenacity>=8.2.2
+requests>=2.31.0

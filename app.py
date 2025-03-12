@@ -6,11 +6,11 @@ import io
 import re
 import tempfile
 import time
-from lg import summarize_meeting
-from audio_processor import process_audio_file
-from speaker_summarizer import generate_speaker_summaries
-from long_recording_processor import process_long_audio
-from summarize_long_transcripts import summarize_long_meeting
+from services.lg import summarize_meeting
+from services.audio_processor import process_audio_file
+from services.speaker_summarizer import generate_speaker_summaries
+from services.long_recording_processor import process_long_audio
+from services.summarize_long_transcripts import summarize_long_meeting
 
 # Check for OpenAI API key
 if not os.environ.get("OPENAI_API_KEY"):

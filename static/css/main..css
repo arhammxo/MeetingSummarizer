@@ -1,0 +1,109 @@
+/* Meeting Summarizer CSS */
+
+body {
+    background-color: #f8f9fa;
+}
+
+.container {
+    max-width: 1200px;
+}
+
+/* Card styling */
+.card {
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+}
+
+.card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.125);
+}
+
+/* Form elements */
+.form-control:focus, .form-select:focus {
+    border-color: #6c757d;
+    box-shadow: 0 0 0 0.25rem rgba(108, 117, 125, 0.25);
+}
+
+/* Button styling */
+.btn-primary {
+    background-color: #0d6efd;
+}
+
+.btn-primary:hover {
+    background-color: #0b5ed7;
+}
+
+/* Progress bars */
+.progress {
+    height: 10px;
+    margin-bottom: 10px;
+}
+
+/* Accordion styling */
+.accordion-button:not(.collapsed) {
+    background-color: #e7f1ff;
+    color: #0c63e4;
+}
+
+.accordion-button:focus {
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+    border-color: #86b7fe;
+}
+
+/* Speaker summary section */
+#speakerSummaries .accordion-item {
+    margin-bottom: 0.5rem;
+}
+
+/* Action items section */
+#actionItems .accordion-item {
+    margin-bottom: 0.5rem;
+}
+
+/* Metadata table */
+#metadataTable td {
+    padding: 0.3rem 0.5rem;
+}
+
+/* Transcript preview styling */
+pre {
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    padding: 10px;
+}
+
+/* Result tabs styling */
+#resultTabs .nav-link {
+    color: #495057;
+}
+
+#resultTabs .nav-link.active {
+    color: #0d6efd;
+    font-weight: 500;
+}
+
+/* Badges */
+.badge {
+    font-weight: 500;
+}
+
+/* Alert positioning */
+.alert {
+    margin-bottom: 1rem;
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+    .col-md-5, .col-md-7 {
+        padding: 0;
+    }
+    
+    #actionItems, #speakerSummaries {
+        margin-top: 1rem;
+    }
+}
