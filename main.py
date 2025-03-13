@@ -34,7 +34,8 @@ templates = Jinja2Templates(directory="templates")
 app = FastAPI(
     title="Meeting Summarizer API",
     description="API for summarizing meeting recordings and transcripts",
-    version="1.0.0"
+    version="1.0.0",
+    max_upload_size=100 * 1024 * 1024  # 100MB limit
 )
 
 # Mount static files directory
@@ -43,7 +44,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
