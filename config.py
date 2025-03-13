@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "mistral"  # Default model
-    OLLAMA_SUMMARIZATION_MODEL: str = "mistral"  # For summarization
-    OLLAMA_MULTILINGUAL_MODEL: str = "llama3"  # For multilingual support
+    OLLAMA_SUMMARIZATION_MODEL: str = "llama3.3"  # For summarization
+    OLLAMA_MULTILINGUAL_MODEL: str = "llama3.3"  # For multilingual support
     
     # Audio Processing
     HUGGINGFACE_TOKEN: str = "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"
