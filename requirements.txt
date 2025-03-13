@@ -17,6 +17,7 @@ ffmpeg-python>=0.2.0
 # Language models and processing - updated for Ollama
 langchain>=0.0.267
 langchain-community>=0.0.10  # Contains Ollama integration
+langchain-ollama
 langgraph>=0.0.10
 langchain-text-splitters>=0.0.1
 langchain-core>=0.1.0

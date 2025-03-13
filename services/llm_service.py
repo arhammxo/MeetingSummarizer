@@ -44,7 +44,7 @@ def get_openai_llm(temperature: float = 0, model_name: Optional[str] = None):
 def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general"):
     """Get an Ollama LLM instance"""
     try:
-        from langchain_community.llms import Ollama
+        from langchain_ollama.llms import OllamaLLM
         
         # Select the appropriate model based on purpose
         if not model_name:
@@ -57,17 +57,17 @@ def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, pur
         
         logger.info(f"Creating Ollama LLM with model: {model_name}, purpose: {purpose}")
         
-        return Ollama(
+        return OllamaLLM(
             base_url=settings.OLLAMA_API_BASE,
             model=model_name,
             temperature=temperature,
             # Add custom stop tokens to mimic OpenAI behavior
             stop=["<human>", "<assistant>"],
-            # Timeout settings
-            request_timeout=120.0
+            # Correct parameter name for timeout
+            timeout=120.0
         )
     except ImportError:
-        logger.error("langchain_community not installed. Run: pip install langchain-community")
+        logger.error("langchain_ollama not installed. Run: pip install langchain-ollama")
         raise
 
 def create_chat_prompt_template(system_prompt, user_prompt):
