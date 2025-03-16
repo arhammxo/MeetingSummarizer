@@ -156,87 +156,89 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail=f"Error processing audio: {str(e)}")
 
 # Background task to process audio
-async def process_audio_background(job_id: str, audio_path: str, is_long_recording: bool, language: Optional[str] = None):
+# Updated process_audio_background function in main.py
+
+async def process_audio_background(job_id: str, audio_path: str, language: Optional[str], is_long_recording: bool):
     """Process audio file in the background and update job status"""
+    temp_files = []  # Track any temporary files we create
+    
     try:
         update_job_status(job_id, JobStatus.PROCESSING, "Processing audio file")
+        
+        # First, check if this is an MP3 file and convert if needed
+        from pathlib import Path
+        from services.audio_converter import is_mp3_file, convert_audio_to_wav
+        
+        if is_mp3_file(audio_path):
+            # Update status to show we're converting
+            update_job_status(job_id, JobStatus.PROCESSING, "Converting MP3 to WAV format", progress=10)
+            
+            try:
+                # Convert to WAV format
+                wav_path = convert_audio_to_wav(audio_path)
+                temp_files.append(wav_path)  # Track for cleanup
+                audio_path_to_process = wav_path
+                logger.info(f"Converted MP3 to WAV: {wav_path}")
+            except Exception as e:
+                logger.error(f"Error converting MP3: {str(e)}")
+                # Continue with original file if conversion fails
+                audio_path_to_process = audio_path
+                update_job_status(job_id, JobStatus.PROCESSING, "Conversion failed, trying with original file", progress=10)
+        else:
+            audio_path_to_process = audio_path
         
         # Process audio based on length
         if is_long_recording:
             # Define a progress callback function
             def progress_callback(progress, status):
+                # Scale progress to leave room for initial conversion (10%)
+                scaled_progress = 10 + (progress * 0.9)  # 10-100%
                 update_job_status(
                     job_id, 
                     JobStatus.PROCESSING, 
                     status,
-                    progress=progress
+                    progress=scaled_progress
                 )
             
             # Process long audio with progress updates
-            result = process_long_audio(audio_path, language=language, progress_callback=progress_callback)
+            result = process_long_audio(audio_path_to_process, language=language, progress_callback=progress_callback)
         else:
             # Process standard audio
-            result = process_audio_file(audio_path, language=language)
+            result = process_audio_file(audio_path_to_process, language=language)
             # Simulate progress updates
             update_job_status(job_id, JobStatus.PROCESSING, "Transcribing audio", progress=33)
             update_job_status(job_id, JobStatus.PROCESSING, "Identifying speakers", progress=66)
             update_job_status(job_id, JobStatus.PROCESSING, "Finalizing transcript", progress=90)
         
-        # Check result structure - debug log to see what's coming from audio processing
-        logger.debug(f"Audio processing result structure keys: {list(result.keys())}")
-        
         # Important: Get the actual detected language from the result
         detected_language = result.get('language', 'auto')
         logger.info(f"Detected language for audio: {detected_language}")
         
-        # If language detection was problematic (returning auto-detection terms instead of a specific language)
-        if detected_language in ['auto', 'auto-detect', 'auto-detected']:
-            # CRITICAL FIX: Try to extract actual language from transcription segments
-            # This is where the real detection from Whisper should be found
-            try:
-                # Check the first segment which might contain language information
-                if 'transcript' in result and result['transcript'] and len(result['transcript']) > 0:
-                    # Look at first segment metadata
-                    first_segment = result['transcript'][0]
-                    logger.debug(f"First transcript segment: {first_segment}")
-                    
-                    # Check if there's any language metadata saved in the segment
-                    # We need to access whatever field contains the language info
-                    # This will vary based on how Whisper's result was processed
-                    if hasattr(first_segment, 'get') and first_segment.get('language'):
-                        detected_language = first_segment.get('language')
-                        logger.info(f"Extracted language from transcript segment: {detected_language}")
-                        
-                        # Update the result with the correctly detected language
-                        result['language'] = detected_language
-            except Exception as e:
-                logger.error(f"Error extracting language from transcript: {str(e)}")
-        
-        # Note for auto-detection scenario - helpful message if we failed to extract a specific language
-        if language is None or language.lower() in ['auto', 'auto-detect', 'auto-detected']:
-            logger.info(f"Auto-detection was used, setting language to detected language: {detected_language}")
-            
-            # If we still have 'auto' at this point, a true language wasn't extracted
-            if detected_language in ['auto', 'auto-detect', 'auto-detected']:
-                logger.warning("Failed to extract specific language code from audio! Will default to English.")
-                # Optional: set a default language for summarization
-                # result['language'] = 'en'  # Uncomment if you want to force a default
-        
-        # Save the result - this will include the corrected language value
+        # Save the result
         save_job_result(job_id, result)
         update_job_status(job_id, JobStatus.COMPLETED, "Audio processing complete", progress=100)
-        
-        # Clean up the temporary file
-        if os.path.exists(audio_path):
-            os.unlink(audio_path)
             
     except Exception as e:
         logger.error(f"Error in background processing: {str(e)}")
         update_job_status(job_id, JobStatus.FAILED, f"Error processing audio: {str(e)}")
         
-        # Clean up the temporary file
+    finally:
+        # Clean up all temporary files
+        for temp_file in temp_files:
+            if os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                    logger.info(f"Cleaned up temporary file: {temp_file}")
+                except Exception as e:
+                    logger.warning(f"Could not delete temporary file {temp_file}: {str(e)}")
+        
+        # Clean up the original file if it exists
         if os.path.exists(audio_path):
-            os.unlink(audio_path)
+            try:
+                os.unlink(audio_path)
+                logger.info(f"Cleaned up original file: {audio_path}")
+            except Exception as e:
+                logger.warning(f"Could not delete original file {audio_path}: {str(e)}")
 
 # Endpoint to get job status
 @app.get("/api/job/{job_id}", response_model=Dict[str, Any])
