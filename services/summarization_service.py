@@ -132,41 +132,50 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
         # Get proper language name for instructions
         language_name = get_language_name(language)
         
+        # Use the LLM service factory instead of directly creating a ChatOpenAI instance
+        # This respects the configured LLM provider (Ollama or OpenAI)
+        from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
+        
         # Initialize the LLM with increased temperature for better multilingual generation
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+        llm = get_llm(temperature=0.2, purpose="multilingual")
         
         # Create a prompt template for generating multilingual speaker summaries
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are an expert meeting analyst working with {language_name} content.
-            Your task is to create a concise summary of what a specific participant contributed to a meeting.
-            ALL YOUR OUTPUT MUST BE IN {language_name} ONLY.
-            
-            Focus on:
-            1. Main points they raised
-            2. Questions they asked
-            3. Action items they took on or assigned
-            4. Key decisions they influenced
-            5. Their primary concerns or interests
-            
-            Format your response as a JSON object with these keys:
-            - "key_contributions": List of 2-4 main points they contributed (IN {language_name})
-            - "action_items": List of any tasks they agreed to do or assigned (IN {language_name})
-            - "questions_raised": List of important questions they asked, if any (IN {language_name})
-            - "brief_summary": A 1-2 sentence summary of their overall participation (IN {language_name})
-            
-            Keep your response focused only on this speaker's contributions.
-            If the transcript contains English or any other language, translate your response to {language_name}.
-            """),
-            ("human", """Speaker: {speaker}
-            
-            Their contributions:
-            {contributions}
-            
-            Please summarize this speaker's participation in the meeting in {language_name} language.""")
-        ])
+        system_message = f"""You are an expert meeting analyst working with {language_name} content.
+        Your task is to create a concise summary of what a specific participant contributed to a meeting.
+        ALL YOUR OUTPUT MUST BE IN {language_name} ONLY.
+        
+        Focus on:
+        1. Main points they raised
+        2. Questions they asked
+        3. Action items they took on or assigned
+        4. Key decisions they influenced
+        5. Their primary concerns or interests
+        
+        Format your response as a JSON object with these keys:
+        - "key_contributions": List of 2-4 main points they contributed (IN {language_name})
+        - "action_items": List of any tasks they agreed to do or assigned (IN {language_name})
+        - "questions_raised": List of important questions they asked, if any (IN {language_name})
+        - "brief_summary": A 1-2 sentence summary of their overall participation (IN {language_name})
+        
+        Keep your response focused only on this speaker's contributions.
+        If the transcript contains English or any other language, translate your response to {language_name}.
+        """
+        
+        user_message = """Speaker: {speaker}
+        
+        Their contributions:
+        {contributions}
+        
+        Please summarize this speaker's participation in the meeting in {language_name} language."""
+        
+        # Create the prompt using our factory function
+        prompt = create_chat_prompt_template(system_message, user_message)
+        
+        # Create the output parser
+        json_parser = create_output_parser()
         
         # Create the chain with JSON output
-        chain = prompt | llm | JsonOutputParser()
+        chain = prompt | llm | json_parser
         
         # Group transcript segments by speaker
         speaker_contributions = {}
@@ -188,32 +197,82 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
             if speaker_lines:
                 speaker_contributions[participant] = '\n'.join(speaker_lines)
         
+        # Add robust error handling and fallbacks
+        from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+        
+        # Create a retry wrapper for API call failures
+        @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), 
+              retry=retry_if_exception_type((ConnectionError, TimeoutError)))
+        def generate_summary_with_retry(speaker, contributions, language_name):
+            try:
+                return chain.invoke({
+                    "speaker": speaker,
+                    "contributions": contributions,
+                    "language_name": language_name
+                })
+            except Exception as e:
+                logger.error(f"Error in API call for {speaker}: {str(e)}")
+                raise
+        
         # Generate summaries for each speaker
         speaker_summaries = {}
         
         for speaker, contributions in speaker_contributions.items():
             if contributions.strip():  # Only process if they have actual contributions
                 try:
-                    summary = chain.invoke({
-                        "speaker": speaker,
-                        "contributions": contributions,
-                        "language_name": language_name
-                    })
+                    # Try using our retry-enabled function
+                    summary = generate_summary_with_retry(speaker, contributions, language_name)
                     speaker_summaries[speaker] = summary
                 except Exception as e:
                     logger.error(f"Error generating multilingual summary for {speaker}: {str(e)}")
-                    # Fallback in case of parsing errors
-                    speaker_summaries[speaker] = {
-                        "key_contributions": ["Error processing contributions"],
-                        "action_items": [],
-                        "questions_raised": [],
-                        "brief_summary": f"Error generating summary for {speaker}: {str(e)}"
-                    }
+                    
+                    # First fallback: Try with a simpler prompt that might be easier to process
+                    try:
+                        # Create a simpler prompt
+                        simple_system = f"Summarize the contributions of {speaker} in {language_name} language."
+                        simple_user = f"Speaker contributions:\n{contributions[:2000]}"  # Limit length
+                        
+                        simple_prompt = create_chat_prompt_template(simple_system, simple_user)
+                        simple_chain = simple_prompt | llm
+                        
+                        # Get a text summary instead of JSON
+                        simple_result = simple_chain.invoke({})
+                        
+                        # Format into our expected structure
+                        speaker_summaries[speaker] = {
+                            "key_contributions": ["See brief summary"],
+                            "action_items": [],
+                            "questions_raised": [],
+                            "brief_summary": str(simple_result)
+                        }
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback summary generation failed: {str(fallback_error)}")
+                        
+                        # Final fallback: Use the original function to get at least some summary
+                        try:
+                            logger.warning(f"Falling back to standard speaker summarizer for {speaker}")
+                            speaker_text = {speaker: contributions}
+                            orig_summary = ss_generate_speaker_summaries('\n'.join([f"{s}: {t}" for s, t in speaker_text.items()]), [speaker])
+                            speaker_summaries[speaker] = orig_summary.get(speaker, {
+                                "key_contributions": ["Error processing contributions"],
+                                "action_items": [],
+                                "questions_raised": [],
+                                "brief_summary": f"Error generating summary for {speaker}: {str(e)}"
+                            })
+                        except Exception as final_error:
+                            # Ultimate fallback
+                            speaker_summaries[speaker] = {
+                                "key_contributions": ["Error processing contributions"],
+                                "action_items": [],
+                                "questions_raised": [],
+                                "brief_summary": f"Error generating summary for {speaker}: {str(e)}"
+                            }
         
         return speaker_summaries
     except Exception as e:
         logger.error(f"Error in multilingual speaker summarization: {str(e)}")
         # Fall back to the original function
+        logger.warning("Falling back to standard speaker summarizer for all speakers")
         return ss_generate_speaker_summaries(transcript, participants)
 
 def summarize_meeting(
