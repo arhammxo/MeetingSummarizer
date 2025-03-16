@@ -5,3 +5,4 @@ job_results
 *.mp3
 *.wav
 audCon.py
+tests

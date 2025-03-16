@@ -30,3 +30,4 @@ python-dotenv>=1.0.0
 aiofiles>=23.1.0
 tenacity>=8.2.2
 requests>=2.31.0
+langdetect

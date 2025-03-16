@@ -243,15 +243,32 @@ def get_language_name(language_code):
         "malayalam": "Malayalam",
         "punjabi": "Punjabi",
         
-        # Auto-detected fallbacks
-        "auto-detected": "Hindi",  # Assuming Hindi is the default for auto-detected
-        None: "English"
+        # Handle auto-detect case without defaulting to Hindi
+        "auto-detect": "Auto-detected",
+        "auto-detected": "Auto-detected",
+        "auto": "Auto-detected"
     }
     
     # If we get a code, return the language name; if we get a language name, return it
     try:
-        # Try to look up the language name from the code
-        return language_map.get(language_code.lower() if isinstance(language_code, str) else language_code, "Hindi")
+        # First, check if this is a specific language code/name we know
+        if isinstance(language_code, str):
+            code_lower = language_code.lower()
+            if code_lower in language_map:
+                return language_map[code_lower]
+            
+            # If it's one of the auto-detect values, log a warning only if it appears
+            # we don't have a proper language detection
+            if code_lower in ["auto-detect", "auto-detected", "auto"]:
+                import logging
+                logging.warning(f"Language was auto-detected but no specific language was identified. Defaulting to English.")
+                return "Auto-detected (defaulting to English)"
+                
+            # For unknown codes, just return the code itself
+            return language_code
+        else:
+            # For None or other non-string values, default to English
+            return "English"
     except:
-        # If language_code is None or any other type
-        return "Hindi"  # Default to Hindi as requested
+        # If language_code is None or any other type that causes errors
+        return "English"  # Default to English as a safer default

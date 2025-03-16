@@ -7,10 +7,18 @@ import numpy as np
 import librosa
 import time
 from datetime import datetime
+import logging
+
+# Add logger for language tracing
+lang_logger = logging.getLogger("language_tracer")
 
 # Enable for better performance
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+def trace_language_flow(step, language_value, context=None):
+    """Log language value at different points in the processing flow"""
+    lang_logger.debug(f"LANGUAGE FLOW [{step}]: {language_value} | Context: {context}")
 
 def transcribe_audio(audio_file, language=None):
     """
@@ -30,6 +38,12 @@ def transcribe_audio(audio_file, language=None):
     
     # Load audio with librosa
     audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
+
+    if not language:
+        # Auto-detection case
+        result = model.transcribe(audio)
+        detected_language = result.get("language")
+        trace_language_flow("WHISPER_DETECTION", detected_language, "Audio transcription")
     
     # Transcribe with language specification if provided
     if language:

@@ -244,12 +244,21 @@ def summarize_meeting(
         if not participants or len(participants) == 0:
             raise ValueError("Participants list cannot be empty")
         
+        # Critical change: Don't treat "auto-detected" as a special case
+        # Instead, if language is auto-detected, we should have the actual 
+        # detected language code from the audio processing
+        
+        # Don't check for "auto-detected" here - if the language is already detected,
+        # it will be a specific language code, not "auto-detected"
+        
         # Use multilingual summarizer if a language is specified (other than English)
-        if HAS_MULTILINGUAL and language and language.lower() not in ["en", "english"]:
+        if HAS_MULTILINGUAL and language and language.lower() not in ["en", "english", "auto", "auto-detected"]:
             logger.info(f"Using multilingual summarizer for language: {language}")
             result = summarize_meeting_multilingual(transcript, participants, language)
         else:
-            # Call the core summarization function
+            # Call the core summarization function with the detected language
+            # If language is "auto-detected", the language should already have been 
+            # replaced with the actual detected language code
             logger.info(f"Using standard summarizer with language: {language if language else 'default'}")
             result = lg_summarize_meeting(transcript, participants, language)
         

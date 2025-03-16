@@ -27,6 +27,18 @@ logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()),
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("meeting-summarizer-api")
 
+# Configure more detailed logging for language detection
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('language_detection.log')
+    ]
+)
+
+# Create a specific logger for language detection
+lang_logger = logging.getLogger('language-detection')
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
@@ -131,8 +143,8 @@ async def upload_audio(
             process_audio_background,
             job_id,
             audio_file_path,
-            language,
-            is_long_recording
+            is_long_recording,
+            language
         )
         
         return {"job_id": job_id, "status": "pending"}
@@ -144,7 +156,7 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail=f"Error processing audio: {str(e)}")
 
 # Background task to process audio
-async def process_audio_background(job_id: str, audio_path: str, language: Optional[str], is_long_recording: bool):
+async def process_audio_background(job_id: str, audio_path: str, is_long_recording: bool, language: Optional[str] = None):
     """Process audio file in the background and update job status"""
     try:
         update_job_status(job_id, JobStatus.PROCESSING, "Processing audio file")
@@ -170,7 +182,47 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
             update_job_status(job_id, JobStatus.PROCESSING, "Identifying speakers", progress=66)
             update_job_status(job_id, JobStatus.PROCESSING, "Finalizing transcript", progress=90)
         
-        # Save the result
+        # Check result structure - debug log to see what's coming from audio processing
+        logger.debug(f"Audio processing result structure keys: {list(result.keys())}")
+        
+        # Important: Get the actual detected language from the result
+        detected_language = result.get('language', 'auto')
+        logger.info(f"Detected language for audio: {detected_language}")
+        
+        # If language detection was problematic (returning auto-detection terms instead of a specific language)
+        if detected_language in ['auto', 'auto-detect', 'auto-detected']:
+            # CRITICAL FIX: Try to extract actual language from transcription segments
+            # This is where the real detection from Whisper should be found
+            try:
+                # Check the first segment which might contain language information
+                if 'transcript' in result and result['transcript'] and len(result['transcript']) > 0:
+                    # Look at first segment metadata
+                    first_segment = result['transcript'][0]
+                    logger.debug(f"First transcript segment: {first_segment}")
+                    
+                    # Check if there's any language metadata saved in the segment
+                    # We need to access whatever field contains the language info
+                    # This will vary based on how Whisper's result was processed
+                    if hasattr(first_segment, 'get') and first_segment.get('language'):
+                        detected_language = first_segment.get('language')
+                        logger.info(f"Extracted language from transcript segment: {detected_language}")
+                        
+                        # Update the result with the correctly detected language
+                        result['language'] = detected_language
+            except Exception as e:
+                logger.error(f"Error extracting language from transcript: {str(e)}")
+        
+        # Note for auto-detection scenario - helpful message if we failed to extract a specific language
+        if language is None or language.lower() in ['auto', 'auto-detect', 'auto-detected']:
+            logger.info(f"Auto-detection was used, setting language to detected language: {detected_language}")
+            
+            # If we still have 'auto' at this point, a true language wasn't extracted
+            if detected_language in ['auto', 'auto-detect', 'auto-detected']:
+                logger.warning("Failed to extract specific language code from audio! Will default to English.")
+                # Optional: set a default language for summarization
+                # result['language'] = 'en'  # Uncomment if you want to force a default
+        
+        # Save the result - this will include the corrected language value
         save_job_result(job_id, result)
         update_job_status(job_id, JobStatus.COMPLETED, "Audio processing complete", progress=100)
         
@@ -267,6 +319,29 @@ async def summarize_background(
     try:
         update_job_status(job_id, JobStatus.PROCESSING, "Analyzing transcript", progress=10)
         
+        # CRITICAL: Fix language handling
+        # Check if we're getting a placeholder instead of a real language code
+        if language in ["auto", "auto-detect", "auto-detected"]:
+            # This is problematic - log a warning
+            logger.warning(f"Received '{language}' as language for summarization, which is not a specific language code")
+            logger.warning("Attempting to detect language from transcript content")
+            
+            # Optionally try to detect language from transcript content
+            # This is a fallback if the audio processing didn't provide a proper language code
+            try:
+                from langdetect import detect
+                detected_lang = detect(transcript[:1000])  # Use first 1000 chars
+                logger.info(f"Detected language from transcript text: {detected_lang}")
+                language = detected_lang
+            except Exception as e:
+                logger.error(f"Error detecting language from transcript: {str(e)}")
+                # Default to English if all else fails
+                logger.warning("Defaulting to English for summarization")
+                language = "en"
+        
+        # Log the final language being used
+        logger.info(f"Generating summary with language: {language}")
+        
         # Process based on length
         if is_long_recording:
             # Parse transcript into required format for long meeting
@@ -277,21 +352,25 @@ async def summarize_background(
             def progress_callback(progress, status):
                 update_job_status(job_id, JobStatus.PROCESSING, status, progress=progress)
             
-            # Summarize long meeting
+            # Summarize long meeting, explicitly passing the language
             result = summarize_long_meeting(
                 transcript_data,
                 language=language,
                 progress_callback=progress_callback
             )
         else:
-            # Regular summarization
+            # Regular summarization, explicitly passing the language
             update_job_status(job_id, JobStatus.PROCESSING, "Generating meeting summary", progress=30)
             result = summarize_meeting(transcript, participants, language=language)
             update_job_status(job_id, JobStatus.PROCESSING, "Extracting action items", progress=60)
         
-        # Generate speaker summaries
+        # Generate speaker summaries, passing the same language parameter
         update_job_status(job_id, JobStatus.PROCESSING, "Creating speaker summaries", progress=80)
         speaker_summaries = generate_speaker_summaries(transcript, participants, language=language)
+        
+        # Get the language name for display
+        from services.utils import get_language_name
+        language_name = get_language_name(language)
         
         # Combine results
         final_result = {
@@ -300,6 +379,7 @@ async def summarize_background(
             "speaker_summaries": speaker_summaries,
             "metadata": {
                 "language": language,
+                "language_name": language_name,
                 "participant_count": len(participants),
                 "is_long_recording": is_long_recording,
                 "timestamp": datetime.now().isoformat()

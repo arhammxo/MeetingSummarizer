@@ -25,7 +25,7 @@ def format_time(seconds: float) -> str:
     """Format seconds into HH:MM:SS format"""
     return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
 
-def transcribe_audio(audio_file: str, language: Optional[str] = None) -> List[Dict[str, Any]]:
+def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe audio file using Whisper model
     Returns segments with start time, end time, and text
@@ -48,17 +48,45 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> List[Di
         logger.info(f"Transcribed with specified language: {language}")
     else:
         try:
-            # Convert audio to torch tensor
-            audio_tensor = torch.tensor(audio)
+            # First detect language only to confirm what Whisper thinks the language is
+            # This step is added for debugging to see exactly what Whisper detects
+            detection_result = model.detect_language(audio)
+            detected_lang = detection_result[0]
+            detected_prob = detection_result[1]
+            logger.info(f"Whisper language detection: {detected_lang} (probability: {detected_prob:.4f})")
+            
+            # Now perform full transcription
             result = model.transcribe(audio)
-            logger.info(f"Transcribed with auto-detected language: {result.get('language', 'unknown')}")
+            
+            # Double-check the language in the result
+            result_language = result.get('language')
+            logger.info(f"Transcribed with auto-detected language: {result_language}")
+            
+            # CRITICAL: Copy the language to the result segments
+            # This ensures the language value is available in multiple places
+            for segment in result["segments"]:
+                segment["language"] = result_language
+                
+            # Also store it directly in the result for easy access
+            result["detected_language"] = result_language
+            
         except Exception as e:
             logger.error(f"Error in language detection: {str(e)}")
             # Fallback to English if detection fails
             result = model.transcribe(audio, language="en")
             logger.info("Falling back to English transcription")
+            # Mark as fallback
+            result["detected_language"] = "en"
+            for segment in result["segments"]:
+                segment["language"] = "en"
     
-    return result["segments"]  # Contains 'start', 'end', 'text'
+    # Log the full structure for debugging
+    logger.debug(f"Whisper result keys: {list(result.keys())}")
+    # If there are segments, log the first one's structure
+    if "segments" in result and result["segments"]:
+        logger.debug(f"First segment keys: {list(result['segments'][0].keys())}")
+    
+    return result
 
 def diarize_audio(audio_file: str) -> Any:
     """
@@ -127,6 +155,50 @@ def format_conversation(diarization_result: Any, transcription_segments: List[Di
     
     return conversation_data
 
+# Here's the fix for the process_audio_file function in audio_service.py
+
+def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Transcribe audio file using Whisper model
+    Returns segments with start time, end time, and text
+    
+    Args:
+        audio_file: Path to the audio file
+        language: Optional language code (e.g., 'hi' for Hindi, None for auto-detection)
+    """
+    logger.info(f"Transcribing audio file {audio_file} with language={language}")
+    
+    # Load a larger model for better multilingual support
+    model = whisper.load_model("medium")
+    
+    # Load audio with librosa
+    audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
+    
+    # Transcribe with language specification if provided
+    detected_language = None
+    if language and language != "auto":
+        result = model.transcribe(audio, language=language)
+        logger.info(f"Transcribed with specified language: {language}")
+    else:
+        try:
+            # Convert audio to torch tensor
+            audio_tensor = torch.tensor(audio)
+            result = model.transcribe(audio)
+            # Important: Store the detected language
+            detected_language = result.get('language')
+            logger.info(f"Transcribed with auto-detected language: {detected_language}")
+        except Exception as e:
+            logger.error(f"Error in language detection: {str(e)}")
+            # Fallback to English if detection fails
+            result = model.transcribe(audio, language="en")
+            logger.info("Falling back to English transcription")
+    
+    # Add the detected language to the result if it wasn't provided
+    if not language and detected_language:
+        result['detected_language'] = detected_language
+    
+    return result
+
 def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
     Process audio file to extract transcript with speaker identification
@@ -151,19 +223,37 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         
         # Transcribe with timing
         step_start = time.time()
-        transcription_segments = transcribe_audio(audio_file_path, language)
+        transcription_result = transcribe_audio(audio_file_path, language)
+        transcription_segments = transcription_result["segments"]  # Contains 'start', 'end', 'text'
         metrics['step_times']['transcription'] = time.time() - step_start
         
         # If language was auto-detected, get the detected language
-        if not language and transcription_segments:
-            # The language is available in the first segment's language attribute
-            try:
-                metrics['language'] = transcription_segments[0].get('language', 'auto-detected')
-            except:
-                # If we can't get it from the segment, at least we tried
-                pass
+        if not language or language == "auto":
+            # First try to get the language from the detected_language field we added
+            if 'detected_language' in transcription_result:
+                detected_language = transcription_result['detected_language']
+                metrics['language'] = detected_language  # Store the actual language code
+                logger.info(f"Using explicit detected_language field: {detected_language}")
+            # Fall back to looking in the language field
+            elif 'language' in transcription_result:
+                detected_language = transcription_result['language']
+                metrics['language'] = detected_language  # Store the actual language code
+                logger.info(f"Using language field from result: {detected_language}")
+            # Fall back to looking in the segments if needed
+            elif transcription_segments and len(transcription_segments) > 0:
+                first_segment = transcription_segments[0]
+                if 'language' in first_segment:
+                    detected_language = first_segment['language']
+                    metrics['language'] = detected_language  # Store the actual language code
+                    logger.info(f"Extracted language from first segment: {detected_language}")
+                else:
+                    logger.warning(f"No language field in first segment. Keys: {list(first_segment.keys())}")
+            else:
+                logger.warning("Could not determine specific language from transcription")
+                # Keep auto-detect in this case
         
         # Diarize with timing
+        logger.info(f"Diarizing audio file {audio_file_path}")
         step_start = time.time()
         diarization_result = diarize_audio(audio_file_path)
         metrics['step_times']['diarization'] = time.time() - step_start
@@ -189,8 +279,13 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
             'start_time': seg['start_time'],
             'end_time': seg['end_time'],
             'start_time_formatted': format_time(seg['start_time']),
-            'end_time_formatted': format_time(seg['end_time'])
+            'end_time_formatted': format_time(seg['end_time']),
+            # Copy the language to each segment
+            'language': metrics['language']
         } for seg in conversation_data]
+        
+        # Final check to confirm the language is being properly returned
+        logger.info(f"Final language being returned: {metrics['language']}")
         
         return metrics
     
