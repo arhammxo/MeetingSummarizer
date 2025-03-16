@@ -2,3 +2,6 @@ __pycache__
 venv
 .env
 job_results
+*.mp3
+*.wav
+audCon.py
