@@ -27,18 +27,6 @@ logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()),
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("meeting-summarizer-api")
 
-# Configure more detailed logging for language detection
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('language_detection.log')
-    ]
-)
-
-# Create a specific logger for language detection
-lang_logger = logging.getLogger('language-detection')
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
@@ -47,7 +35,7 @@ app = FastAPI(
     title="Meeting Summarizer API",
     description="API for summarizing meeting recordings and transcripts",
     version="1.0.0",
-    max_upload_size=100 * 1024 * 1024  # 100MB limit
+    max_upload_size=500 * 1024 * 1024  # 500MB limit
 )
 
 # Mount static files directory
@@ -143,8 +131,8 @@ async def upload_audio(
             process_audio_background,
             job_id,
             audio_file_path,
-            is_long_recording,
-            language
+            language,
+            is_long_recording
         )
         
         return {"job_id": job_id, "status": "pending"}
@@ -156,36 +144,10 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail=f"Error processing audio: {str(e)}")
 
 # Background task to process audio
-# Updated process_audio_background function in main.py
-
 async def process_audio_background(job_id: str, audio_path: str, language: Optional[str], is_long_recording: bool):
     """Process audio file in the background and update job status"""
-    temp_files = []  # Track any temporary files we create
-    
     try:
         update_job_status(job_id, JobStatus.PROCESSING, "Processing audio file")
-        
-        # First, check if this is an MP3 file and convert if needed
-        from pathlib import Path
-        from services.audio_converter import is_mp3_file, convert_audio_to_wav
-        
-        if is_mp3_file(audio_path):
-            # Update status to show we're converting
-            update_job_status(job_id, JobStatus.PROCESSING, "Converting MP3 to WAV format", progress=10)
-            
-            try:
-                # Convert to WAV format
-                wav_path = convert_audio_to_wav(audio_path)
-                temp_files.append(wav_path)  # Track for cleanup
-                audio_path_to_process = wav_path
-                logger.info(f"Converted MP3 to WAV: {wav_path}")
-            except Exception as e:
-                logger.error(f"Error converting MP3: {str(e)}")
-                # Continue with original file if conversion fails
-                audio_path_to_process = audio_path
-                update_job_status(job_id, JobStatus.PROCESSING, "Conversion failed, trying with original file", progress=10)
-        else:
-            audio_path_to_process = audio_path
         
         # Process audio based on length
         if is_long_recording:
