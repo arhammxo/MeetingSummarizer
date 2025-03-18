@@ -11,6 +11,7 @@ import tempfile
 import soundfile as sf
 from pydub import AudioSegment
 import logging
+from services.audio_service import process_audio_file
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -46,6 +47,20 @@ def split_audio(audio_path, chunk_duration=600, overlap=15):
         
         # Create chunks with librosa
         chunk_files = []
+        
+        # If total duration is very short, just process the whole file
+        if total_duration <= chunk_duration:
+            logger.info(f"Audio is shorter than chunk size ({total_duration}s < {chunk_duration}s), processing as single chunk")
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                sf.write(temp_file.name, audio_array, sr)
+                chunk_files.append({
+                    "path": temp_file.name,
+                    "start_time": 0,
+                    "end_time": total_duration
+                })
+            return chunk_files
+        
+        # For longer files, proceed with chunking
         for start_time in range(0, int(total_duration), chunk_duration - overlap):
             end_time = min(start_time + chunk_duration, total_duration)
             if end_time - start_time < 30:  # Skip very short segments
@@ -72,6 +87,20 @@ def split_audio(audio_path, chunk_duration=600, overlap=15):
     logger.info(f"Loaded with pydub. Duration: {audio_duration}s")
     
     chunk_files = []
+    
+    # If audio is shorter than chunk size, just use the whole file
+    if audio_duration <= chunk_duration:
+        logger.info(f"Audio is shorter than chunk size ({audio_duration}s < {chunk_duration}s), processing as single chunk")
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            audio.export(temp_file.name, format="wav")
+            chunk_files.append({
+                "path": temp_file.name,
+                "start_time": 0,
+                "end_time": audio_duration
+            })
+        return chunk_files
+    
+    # For longer files, create chunks
     for start_time in range(0, int(audio_duration), chunk_duration - overlap):
         end_time = min(start_time + chunk_duration, audio_duration)
         if end_time - start_time < 30:  # Skip very short segments
@@ -272,14 +301,54 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
     }
     
     try:
+        # Check if file is MP3 and convert if needed
+        from pathlib import Path
+        from services.audio_converter import is_mp3_file, convert_audio_to_wav
+        
+        original_file = audio_file_path
+        if is_mp3_file(audio_file_path):
+            if progress_callback:
+                progress_callback(5, f"Converting MP3 to WAV format")
+            try:
+                audio_file_path = convert_audio_to_wav(audio_file_path)
+                logger.info(f"Converted MP3 to WAV: {audio_file_path}")
+            except Exception as e:
+                logger.error(f"Error converting MP3: {str(e)}")
+                # Continue with original file
+        
         # Split audio into chunks
         step_start = time.time()
+        if progress_callback:
+            progress_callback(10, f"Splitting audio into chunks")
+            
         chunks = split_audio(audio_file_path, chunk_duration=chunk_duration)
         metrics['total_chunks'] = len(chunks)
         metrics['step_times']['splitting'] = time.time() - step_start
         
         if progress_callback:
-            progress_callback(10, f"Split audio into {len(chunks)} chunks")
+            progress_callback(15, f"Split audio into {len(chunks)} chunks")
+        
+        # Handle case where no chunks were created (should not happen with our updated split_audio)
+        if len(chunks) == 0:
+            logger.warning("No chunks were created. This should not happen with the updated code.")
+            logger.info("Processing the entire file as a single chunk")
+            
+            # Process the entire file directly using standard processing
+            if progress_callback:
+                progress_callback(20, "Processing entire file as single chunk")
+                
+            result = process_audio_file(audio_file_path, language=language)
+            
+            # Copy relevant data to our metrics structure
+            metrics['transcript'] = result['transcript']
+            metrics['formatted_transcript'] = result['formatted_transcript']
+            metrics['language'] = result['language']
+            metrics['total_time'] = time.time() - start_total
+            
+            if progress_callback:
+                progress_callback(100, "Processing complete")
+                
+            return metrics
         
         # Process each chunk
         all_transcription_segments = []
@@ -287,7 +356,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         
         for i, chunk in enumerate(chunks):
             if progress_callback:
-                progress_percentage = 10 + (i / len(chunks) * 60)  # 10-70% for processing chunks
+                progress_percentage = 20 + (i / len(chunks) * 60)  # 20-80% for processing chunks
                 progress_callback(progress_percentage, f"Processing chunk {i+1}/{len(chunks)}")
             
             chunk_path = chunk["path"]
@@ -319,7 +388,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             metrics['chunks_processed'] += 1
             
         if progress_callback:
-            progress_callback(70, "Merging results")
+            progress_callback(80, "Merging results")
         
         # Merge diarization results
         step_start = time.time()
@@ -327,7 +396,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         metrics['step_times']['merging'] = time.time() - step_start
         
         if progress_callback:
-            progress_callback(80, "Formatting conversation")
+            progress_callback(90, "Formatting conversation")
         
         # Format into conversation
         step_start = time.time()
@@ -356,6 +425,13 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         if progress_callback:
             progress_callback(100, "Processing complete")
             
+        # Clean up the converted file if we created one
+        if original_file != audio_file_path and os.path.exists(audio_file_path):
+            try:
+                os.unlink(audio_file_path)
+            except:
+                pass
+                
         return metrics
     
     except Exception as e:

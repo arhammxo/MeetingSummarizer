@@ -187,8 +187,26 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
         else:
             audio_path_to_process = audio_path
         
-        # Process audio based on length
-        if is_long_recording:
+        # Check if we should use long processing or standard processing
+        # For very short files, always use standard processing regardless of is_long_recording flag
+        is_short_audio = False
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(audio_path_to_process)
+            duration_seconds = len(audio) / 1000
+            logger.info(f"Audio duration: {duration_seconds} seconds")
+            
+            # If audio is less than 30 seconds, always use standard processing
+            if duration_seconds < 30:
+                is_short_audio = True
+                logger.info(f"Audio is very short ({duration_seconds}s), using standard processing")
+                update_job_status(job_id, JobStatus.PROCESSING, f"Audio is short ({duration_seconds}s), using standard processing", progress=15)
+        except Exception as e:
+            logger.warning(f"Could not determine audio length: {str(e)}")
+            # Continue with the user's choice
+        
+        # Process audio based on length and user selection
+        if is_long_recording and not is_short_audio:
             # Define a progress callback function
             def progress_callback(progress, status):
                 # Scale progress to leave room for initial conversion (10%)
@@ -210,8 +228,32 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
             update_job_status(job_id, JobStatus.PROCESSING, "Identifying speakers", progress=66)
             update_job_status(job_id, JobStatus.PROCESSING, "Finalizing transcript", progress=90)
         
+        # Verify we got results - sanity check
+        if not result.get('transcript') or not result.get('formatted_transcript'):
+            logger.warning(f"Empty transcript detected! Result: {result}")
+            
+            # If standard processing failed to produce a transcript, try the other method
+            if is_long_recording and is_short_audio:
+                logger.info("Standard processing produced empty transcript. Trying long processing method.")
+                update_job_status(job_id, JobStatus.PROCESSING, "Retrying with alternative processing method", progress=50)
+                
+                def progress_callback(progress, status):
+                    scaled_progress = 50 + (progress * 0.5)  # 50-100%
+                    update_job_status(job_id, JobStatus.PROCESSING, status, progress=scaled_progress)
+                
+                result = process_long_audio(audio_path_to_process, language=language, progress_callback=progress_callback)
+            elif not is_long_recording:
+                logger.info("Standard processing produced empty transcript. Trying long processing method.")
+                update_job_status(job_id, JobStatus.PROCESSING, "Retrying with alternative processing method", progress=50)
+                
+                def progress_callback(progress, status):
+                    scaled_progress = 50 + (progress * 0.5)  # 50-100%
+                    update_job_status(job_id, JobStatus.PROCESSING, status, progress=scaled_progress)
+                
+                result = process_long_audio(audio_path_to_process, language=language, progress_callback=progress_callback)
+        
         # Important: Get the actual detected language from the result
-        detected_language = result.get('language', 'auto')
+        detected_language = result.get('language', 'auto-detect')
         logger.info(f"Detected language for audio: {detected_language}")
         
         # Save the result
