@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Any, Optional, Callable
 from pydub import AudioSegment
 import soundfile as sf
-from core.audio_processor import transcribe_audio
+from core.audio_processor import transcribe_audio, diarize_audio, format_conversation
 
 # Configure logging
 logger = logging.getLogger("audio-service")
@@ -25,28 +25,6 @@ if torch.cuda.is_available():
 def format_time(seconds: float) -> str:
     """Format seconds into HH:MM:SS format"""
     return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
-
-def diarize_audio(audio_file: str) -> Any:
-    """
-    Perform speaker diarization on audio file
-    Returns segments with speaker identifications
-    """
-    logger.info(f"Diarizing audio file {audio_file}")
-    
-    # Replace with your own HuggingFace token or use environment variable
-    hf_token = os.environ.get("HUGGINGFACE_TOKEN", "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")
-    
-    diarization_pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token)
-    
-    # Use GPU if available
-    diarization_pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-    
-    with ProgressHook() as hook:
-        diarization_result = diarization_pipeline(audio_file, hook=hook)
-    
-    return diarization_result
 
 def format_conversation(diarization_result: Any, transcription_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
