@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "gemma3:latest"  # Default model
-    OLLAMA_SUMMARIZATION_MODEL: str = "gemma3:latest"  # For summarization
-    OLLAMA_MULTILINGUAL_MODEL: str = "gemma3:latest"  # For multilingual support
+    OLLAMA_MODEL: str = "mistral:latest"  # Default model
+    OLLAMA_SUMMARIZATION_MODEL: str = "mistral:latest"  # For summarization
+    OLLAMA_MULTILINGUAL_MODEL: str = "mistral:latest"  # For multilingual support
     
     # Audio Processing
     HUGGINGFACE_TOKEN: Optional[str] = None

@@ -12,6 +12,7 @@ import logging
 from typing import Dict, List, Any, Optional, Callable
 from pydub import AudioSegment
 import soundfile as sf
+from core.audio_processor import transcribe_audio
 
 # Configure logging
 logger = logging.getLogger("audio-service")
@@ -24,69 +25,6 @@ if torch.cuda.is_available():
 def format_time(seconds: float) -> str:
     """Format seconds into HH:MM:SS format"""
     return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
-
-def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Transcribe audio file using Whisper model
-    Returns segments with start time, end time, and text
-    
-    Args:
-        audio_file: Path to the audio file
-        language: Optional language code (e.g., 'hi' for Hindi, None for auto-detection)
-    """
-    logger.info(f"Transcribing audio file {audio_file} with language={language}")
-    
-    # Load a larger model for better multilingual support
-    model = whisper.load_model("medium")
-    
-    # Load audio with librosa
-    audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
-    
-    # Transcribe with language specification if provided
-    if language and language != "auto":
-        result = model.transcribe(audio, language=language)
-        logger.info(f"Transcribed with specified language: {language}")
-    else:
-        try:
-            # First detect language only to confirm what Whisper thinks the language is
-            # This step is added for debugging to see exactly what Whisper detects
-            detection_result = model.detect_language(audio)
-            detected_lang = detection_result[0]
-            detected_prob = detection_result[1]
-            logger.info(f"Whisper language detection: {detected_lang} (probability: {detected_prob:.4f})")
-            
-            # Now perform full transcription
-            result = model.transcribe(audio)
-            
-            # Double-check the language in the result
-            result_language = result.get('language')
-            logger.info(f"Transcribed with auto-detected language: {result_language}")
-            
-            # CRITICAL: Copy the language to the result segments
-            # This ensures the language value is available in multiple places
-            for segment in result["segments"]:
-                segment["language"] = result_language
-                
-            # Also store it directly in the result for easy access
-            result["detected_language"] = result_language
-            
-        except Exception as e:
-            logger.error(f"Error in language detection: {str(e)}")
-            # Fallback to English if detection fails
-            result = model.transcribe(audio, language="en")
-            logger.info("Falling back to English transcription")
-            # Mark as fallback
-            result["detected_language"] = "en"
-            for segment in result["segments"]:
-                segment["language"] = "en"
-    
-    # Log the full structure for debugging
-    logger.debug(f"Whisper result keys: {list(result.keys())}")
-    # If there are segments, log the first one's structure
-    if "segments" in result and result["segments"]:
-        logger.debug(f"First segment keys: {list(result['segments'][0].keys())}")
-    
-    return result
 
 def diarize_audio(audio_file: str) -> Any:
     """
@@ -154,50 +92,6 @@ def format_conversation(diarization_result: Any, transcription_segments: List[Di
             })
     
     return conversation_data
-
-# Here's the fix for the process_audio_file function in audio_service.py
-
-def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Transcribe audio file using Whisper model
-    Returns segments with start time, end time, and text
-    
-    Args:
-        audio_file: Path to the audio file
-        language: Optional language code (e.g., 'hi' for Hindi, None for auto-detection)
-    """
-    logger.info(f"Transcribing audio file {audio_file} with language={language}")
-    
-    # Load a larger model for better multilingual support
-    model = whisper.load_model("medium")
-    
-    # Load audio with librosa
-    audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
-    
-    # Transcribe with language specification if provided
-    detected_language = None
-    if language and language != "auto":
-        result = model.transcribe(audio, language=language)
-        logger.info(f"Transcribed with specified language: {language}")
-    else:
-        try:
-            # Convert audio to torch tensor
-            audio_tensor = torch.tensor(audio)
-            result = model.transcribe(audio)
-            # Important: Store the detected language
-            detected_language = result.get('language')
-            logger.info(f"Transcribed with auto-detected language: {detected_language}")
-        except Exception as e:
-            logger.error(f"Error in language detection: {str(e)}")
-            # Fallback to English if detection fails
-            result = model.transcribe(audio, language="en")
-            logger.info("Falling back to English transcription")
-    
-    # Add the detected language to the result if it wasn't provided
-    if not language and detected_language:
-        result['detected_language'] = detected_language
-    
-    return result
 
 def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
