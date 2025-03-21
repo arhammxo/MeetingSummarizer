@@ -15,7 +15,7 @@ import soundfile as sf
 from pathlib import Path
 
 # Configure logging
-logger = logging.getLogger("audio-service")
+logger = logging.getLogger("audio-processor")
 
 # Enable for better performance if using CUDA
 if torch.cuda.is_available():

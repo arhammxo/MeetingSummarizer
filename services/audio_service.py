@@ -26,51 +26,6 @@ def format_time(seconds: float) -> str:
     """Format seconds into HH:MM:SS format"""
     return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
 
-def format_conversation(diarization_result: Any, transcription_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Align transcription with speaker segments
-    Returns conversation data with speaker labels
-    """
-    conversation_data = []  # List to hold speaker segments
-    used_segments = set()
-    
-    # Sort both diarization results and transcription segments by start time
-    diarization_turns = sorted(diarization_result.itertracks(yield_label=True), key=lambda x: x[0].start)
-    transcription_segments = sorted(transcription_segments, key=lambda x: x["start"])
-    
-    for turn, _, speaker in diarization_turns:
-        turn_start = turn.start
-        turn_end = turn.end
-        segment_text = []
-        
-        for seg_idx, segment in enumerate(transcription_segments):
-            if seg_idx in used_segments:
-                continue  # Skip already used segments
-                
-            seg_start = segment["start"]
-            seg_end = segment["end"]
-            
-            # Calculate overlap duration
-            overlap_start = max(turn_start, seg_start)
-            overlap_end = min(turn_end, seg_end)
-            overlap_duration = max(0, overlap_end - overlap_start)
-            
-            # Require at least 50% overlap with the speaker turn
-            segment_duration = seg_end - seg_start
-            if overlap_duration / segment_duration >= 0.5:
-                segment_text.append(segment["text"].strip())
-                used_segments.add(seg_idx)  # Mark segment as used
-                
-        if segment_text:
-            conversation_data.append({
-                "speaker": speaker,
-                "text": ' '.join(segment_text).strip(),
-                "start_time": turn_start,
-                "end_time": turn_end
-            })
-    
-    return conversation_data
-
 def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
     Process audio file to extract transcript with speaker identification
