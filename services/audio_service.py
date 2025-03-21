@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Any, Optional, Callable
 from pydub import AudioSegment
 import soundfile as sf
-from core.audio_processor import format_time, transcribe_audio, diarize_audio, format_conversation, process_audio_file
+from core.audio_processor import format_time, process_audio_file
 
 # Configure logging
 logger = logging.getLogger("audio-service")
