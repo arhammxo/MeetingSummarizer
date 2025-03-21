@@ -84,12 +84,89 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (data.result && data.result.transcript) {
                         currentTranscript = data.result;
                         
-                        // Show transcript preview
+                        // Show detected language in UI
+                        if (data.result.language) {
+                            const detectedLang = data.result.language;
+                            const languageDisplay = getLanguageDisplayName(detectedLang);
+                            
+                            // Update message with clear language detection info
+                            let message = `Processing complete. `;
+                            
+                            // If language was auto-detected, make it clearer
+                            const selectedLanguage = document.getElementById('audioLanguage').value;
+                            if (selectedLanguage === 'auto') {
+                                message += `Language automatically detected as: ${languageDisplay} (${detectedLang})`;
+                            } else {
+                                message += `Using selected language: ${languageDisplay}`;
+                            }
+                            
+                            // Add confidence information if available
+                            if (data.result.confidence_metrics && data.result.confidence_metrics.average) {
+                                const avgConfidence = data.result.confidence_metrics.average;
+                                message += `<br>Average transcription confidence: <strong>${avgConfidence}%</strong>`;
+                                
+                                // Add warning for low confidence
+                                if (data.result.confidence_metrics.low_confidence_percentage > 20) {
+                                    message += `<br><span class="text-warning">⚠️ ${data.result.confidence_metrics.low_confidence_percentage}% of segments have low confidence</span>`;
+                                }
+                            }
+                            
+                            updateAudioProgress(100, message);
+                            
+                            // Add confidence stats to the UI
+                            if (data.result.confidence_metrics) {
+                                const notice = document.createElement('div');
+                                notice.className = 'alert alert-info mt-2';
+                                notice.innerHTML = `
+                                    <h5>Transcription Confidence</h5>
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <p><strong>Average:</strong> ${data.result.confidence_metrics.average}%</p>
+                                            <p><strong>Range:</strong> ${data.result.confidence_metrics.min}% - ${data.result.confidence_metrics.max}%</p>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="progress mb-2" style="height: 20px;">
+                                                <div class="progress-bar bg-success" role="progressbar" 
+                                                     style="width: ${data.result.confidence_metrics.average}%" 
+                                                     aria-valuenow="${data.result.confidence_metrics.average}" 
+                                                     aria-valuemin="0" aria-valuemax="100">
+                                                    ${data.result.confidence_metrics.average}%
+                                                </div>
+                                            </div>
+                                            <small class="text-muted">
+                                                <span class="badge bg-success me-1">✓</span> High confidence (90%+)<br>
+                                                <span class="badge bg-warning text-dark me-1">~</span> Medium confidence (70-89%)<br>
+                                                <span class="badge bg-danger me-1">?</span> Low confidence (<70%)
+                                            </small>
+                                        </div>
+                                    </div>
+                                `;
+                                document.getElementById('transcriptPreview').appendChild(notice);
+                            }
+                        }
+                        
+                        // Show transcript preview with confidence indicators
                         const previewText = document.getElementById('transcriptPreviewText');
-                        const formattedTranscript = data.result.formatted_transcript.join('\n');
-                        previewText.textContent = formattedTranscript.length > 1000 
-                            ? formattedTranscript.substring(0, 1000) + '...' 
-                            : formattedTranscript;
+                        const formattedTranscript = data.result.formatted_transcript;
+                        
+                        // Convert to HTML with color-coding by confidence
+                        const htmlContent = formattedTranscript.map(line => {
+                            // Color-code based on confidence indicators
+                            if (line.includes("✓ Speaker")) {
+                                return `<div class="text-success">${line}</div>`;
+                            } else if (line.includes("~ Speaker")) {
+                                return `<div class="text-warning">${line}</div>`;
+                            } else if (line.includes("? Speaker")) {
+                                return `<div class="text-danger">${line}</div>`;
+                            } else {
+                                return `<div>${line}</div>`;
+                            }
+                        }).join('');
+                        
+                        // Use innerHTML to render the HTML formatting
+                        previewText.innerHTML = htmlContent.length > 10000 
+                            ? htmlContent.substring(0, 10000) + '...' 
+                            : htmlContent;
                         
                         document.getElementById('transcriptPreview').classList.remove('d-none');
                     }
@@ -106,6 +183,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1000);
     }
     
+    function addConfidenceIndicators(text, confidence) {
+        if (!confidence) return text;
+        
+        let indicator = "";
+        let badgeClass = "";
+        
+        if (confidence >= 90) {
+            indicator = "✓";
+            badgeClass = "bg-success";
+        } else if (confidence >= 70) {
+            indicator = "~";
+            badgeClass = "bg-warning text-dark";
+        } else {
+            indicator = "?";
+            badgeClass = "bg-danger";
+        }
+        
+        return `<span class="badge ${badgeClass} me-1" title="${confidence}% confidence">${indicator}</span> ${text}`;
+    }
+
     /**
      * Update audio processing progress
      */
@@ -444,6 +541,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const meetingSummary = document.getElementById('meetingSummary');
         meetingSummary.textContent = result.meeting_summary.summary;
         
+        // Add confidence information to metadata if available
+        if (currentTranscript && currentTranscript.confidence_metrics) {
+            const metrics = currentTranscript.confidence_metrics;
+            const confidenceData = document.createElement('div');
+            confidenceData.className = 'small text-muted mt-2';
+            confidenceData.innerHTML = `
+                <strong>Transcription Confidence:</strong> ${metrics.average}% average
+                ${metrics.low_confidence_percentage > 10 ? 
+                `<span class="text-warning ms-2">⚠️ ${metrics.low_confidence_percentage}% low confidence segments</span>` : ''}
+            `;
+            meetingSummary.appendChild(confidenceData);
+        }
+
         // Key points
         const keyPoints = document.getElementById('keyPoints');
         keyPoints.innerHTML = '';
@@ -507,8 +617,25 @@ document.addEventListener('DOMContentLoaded', () => {
             const metadata = result.metadata;
             
             // Add rows to the table
-            addMetadataRow(metadataTable, 'Language', metadata.language || 'Auto-detected');
+            if (metadata.language_name) {
+                // Show the full language name rather than just the code
+                addMetadataRow(metadataTable, 'Language', metadata.language_name);
+            } else {
+                addMetadataRow(metadataTable, 'Language', metadata.language || 'Auto-detected');
+            }
             
+            // Add confidence metrics if available
+            if (currentTranscript && currentTranscript.confidence_metrics) {
+                const metrics = currentTranscript.confidence_metrics;
+                addMetadataRow(metadataTable, 'Transcription Confidence', 
+                              `${metrics.average}% (range: ${metrics.min}%-${metrics.max}%)`);
+                              
+                // Only show low confidence warning if significant
+                if (metrics.low_confidence_percentage > 10) {
+                    addMetadataRow(metadataTable, 'Low Confidence Segments', 
+                                  `${metrics.low_confidence_count} segments (${metrics.low_confidence_percentage}%)`);
+                }
+            }
             if (metadata.total_duration_minutes) {
                 addMetadataRow(metadataTable, 'Duration', `${metadata.total_duration_minutes} minutes`);
             }
@@ -529,6 +656,27 @@ document.addEventListener('DOMContentLoaded', () => {
         if (result.speaker_summaries) {
             Object.entries(result.speaker_summaries).forEach(([speaker, summary], index) => {
                 const speakerId = `speaker-${index}`;
+                
+                // Add confidence information if available
+                let confidenceDisplay = '';
+                if (currentTranscript) {
+                    // Find confidence scores for this speaker
+                    const speakerSegments = currentTranscript.transcript.filter(s => `Speaker ${s.speaker}` === speaker);
+                    if (speakerSegments.length > 0) {
+                        // Calculate average confidence for this speaker
+                        const confidences = speakerSegments
+                            .filter(s => s.confidence !== undefined && s.confidence !== null)
+                            .map(s => s.confidence);
+                        
+                        if (confidences.length > 0) {
+                            const avgConfidence = confidences.reduce((a, b) => a + b, 0) / confidences.length;
+                            const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
+                                                   (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
+                            
+                            confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+                        }
+                    }
+                }
                 
                 let contributionsList = '';
                 if (summary.key_contributions && summary.key_contributions.length > 0) {
@@ -555,7 +703,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="accordion-item">
                         <h2 class="accordion-header" id="heading-${speakerId}">
                             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${speakerId}" aria-expanded="false" aria-controls="collapse-${speakerId}">
-                                <strong>${speaker}</strong>
+                                <strong>${speaker}</strong>${confidenceDisplay}
                             </button>
                         </h2>
                         <div id="collapse-${speakerId}" class="accordion-collapse collapse" aria-labelledby="heading-${speakerId}" data-bs-parent="#speakerSummaries">

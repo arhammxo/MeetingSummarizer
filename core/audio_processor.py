@@ -63,7 +63,7 @@ def preprocess_audio(audio_file: str) -> str:
 def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe audio file using Whisper model
-    Returns segments with start time, end time, and text
+    Returns segments with start time, end time, text, and confidence scores
     
     Args:
         audio_file: Path to the audio file
@@ -77,28 +77,166 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[st
     # Load audio with librosa
     audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
     
-    # Transcribe with language specification if provided
-    detected_language = None
+    # Configure transcription to include word-level timestamps and confidence scores
+    # Note: We need to enable word timestamps to get per-segment confidence
+    transcribe_options = {
+        "word_timestamps": True,  # Enable word-level details
+        "suppress_tokens": [-1],  # Don't suppress any tokens
+        "without_timestamps": False,  # Keep timestamps
+        "max_initial_timestamp": None,
+        "fp16": torch.cuda.is_available()  # Use fp16 if GPU is available
+    }
+    
+    # Add language if specified
     if language and language != "auto":
-        result = model.transcribe(audio, language=language)
-        logger.info(f"Transcribed with specified language: {language}")
-    else:
-        try:
-            # Convert audio to torch tensor
+        transcribe_options["language"] = language
+    
+    # Transcribe with options
+    detected_language = None
+    try:
+        # Convert audio to torch tensor if not already
+        if not isinstance(audio, torch.Tensor):
             audio_tensor = torch.tensor(audio)
-            result = model.transcribe(audio)
-            # Important: Store the detected language
-            detected_language = result.get('language')
+        else:
+            audio_tensor = audio
+            
+        # Run transcription with our options
+        result = model.transcribe(audio_tensor, **transcribe_options)
+        
+        # Extract detected language
+        detected_language = result.get('language')
+        
+        if language:
+            logger.info(f"Transcribed with specified language: {language}")
+        else:
             logger.info(f"Transcribed with auto-detected language: {detected_language}")
-        except Exception as e:
-            logger.error(f"Error in language detection: {str(e)}")
-            # Fallback to English if detection fails
-            result = model.transcribe(audio, language="en")
+    except Exception as e:
+        logger.error(f"Error in transcription: {str(e)}")
+        # Fallback to English if transcription fails
+        transcribe_options["language"] = "en"
+        try:
+            result = model.transcribe(audio, **transcribe_options)
             logger.info("Falling back to English transcription")
+        except Exception as e2:
+            logger.error(f"Even fallback transcription failed: {str(e2)}")
+            raise RuntimeError(f"Failed to transcribe audio: {str(e2)}")
     
     # Add the detected language to the result if it wasn't provided
     if not language and detected_language:
         result['detected_language'] = detected_language
+    
+    # Process segments to add confidence scores
+    enhanced_segments = []
+    for segment in result["segments"]:
+        # Extract basic segment info
+        segment_info = {
+            "id": segment.get("id", 0),
+            "start": segment.get("start", 0),
+            "end": segment.get("end", 0),
+            "text": segment.get("text", "").strip(),
+        }
+        
+        # Extract confidence scores
+        # Method 1: Average token probabilities if available
+        if "avg_logprob" in segment:
+            # Convert log probability to confidence percentage (0-100)
+            # logprob is negative, closer to 0 means higher confidence
+            # Typical values range from -1 (high confidence) to -5 (low confidence)
+            logprob = segment["avg_logprob"]
+            # Scale to 0-100 range, with -1 or better mapping to ~90-100%
+            confidence = min(100, max(0, 100 + 20 * logprob))
+            segment_info["confidence"] = round(confidence, 2)
+            segment_info["avg_logprob"] = logprob
+        else:
+            # If avg_logprob not available, try a different approach
+            segment_info["confidence"] = None
+            
+        # Method 2: Try to get token-level probabilities if available
+        if "tokens" in segment and "token_probs" in segment:
+            tokens = segment.get("tokens", [])
+            token_probs = segment.get("token_probs", [])
+            
+            # Only process if we have valid data
+            if tokens and token_probs and len(tokens) == len(token_probs):
+                # Calculate average probability for non-None values
+                valid_probs = [p for p in token_probs if p is not None]
+                if valid_probs:
+                    avg_token_prob = sum(valid_probs) / len(valid_probs)
+                    # Convert to percentage
+                    token_confidence = 100 * avg_token_prob
+                    segment_info["token_confidence"] = round(token_confidence, 2)
+                    
+                    # If we didn't have avg_logprob, use this as the main confidence
+                    if segment_info["confidence"] is None:
+                        segment_info["confidence"] = segment_info["token_confidence"]
+                        
+                # Include token-level details if detailed logging is needed
+                token_details = []
+                for i, (token, prob) in enumerate(zip(tokens, token_probs)):
+                    if prob is not None:
+                        token_details.append({
+                            "token": token,
+                            "probability": prob
+                        })
+                segment_info["tokens"] = token_details
+        
+        # Method 3: If no probability data available, estimate from no_speech_prob
+        if segment_info["confidence"] is None and "no_speech_prob" in segment:
+            # Lower no_speech_prob means higher speech confidence
+            speech_conf = 100 * (1 - segment.get("no_speech_prob", 0))
+            segment_info["confidence"] = round(speech_conf, 2)
+            segment_info["no_speech_prob"] = segment.get("no_speech_prob", 0)
+        
+        # Final fallback: If we still don't have confidence, set a default
+        if segment_info["confidence"] is None:
+            segment_info["confidence"] = 50.0  # Default mid-range confidence
+            segment_info["confidence_source"] = "default"
+        
+        # Add word-level timestamps and confidence if available
+        if "words" in segment:
+            words_with_confidence = []
+            for word in segment["words"]:
+                word_info = {
+                    "word": word.get("word", ""),
+                    "start": word.get("start", 0),
+                    "end": word.get("end", 0)
+                }
+                
+                # Add probability if available
+                if "probability" in word:
+                    word_info["confidence"] = round(100 * word.get("probability", 0), 2)
+                
+                words_with_confidence.append(word_info)
+            
+            segment_info["words"] = words_with_confidence
+        
+        # Add segment confidence categorization
+        if segment_info["confidence"] >= 90:
+            segment_info["confidence_level"] = "high"
+        elif segment_info["confidence"] >= 70:
+            segment_info["confidence_level"] = "medium"
+        else:
+            segment_info["confidence_level"] = "low"
+            
+        enhanced_segments.append(segment_info)
+    
+    # Replace the original segments with our enhanced ones
+    result["segments"] = enhanced_segments
+    
+    # Add overall confidence metrics
+    if enhanced_segments:
+        confidences = [seg["confidence"] for seg in enhanced_segments if "confidence" in seg]
+        if confidences:
+            result["overall_confidence"] = {
+                "average": round(sum(confidences) / len(confidences), 2),
+                "min": round(min(confidences), 2),
+                "max": round(max(confidences), 2)
+            }
+            
+            # Flag if there are any low confidence segments
+            low_confidence_segments = [s for s in enhanced_segments if s.get("confidence_level") == "low"]
+            result["low_confidence_count"] = len(low_confidence_segments)
+            result["low_confidence_percentage"] = round(100 * len(low_confidence_segments) / len(enhanced_segments), 2)
     
     return result
 
@@ -293,80 +431,91 @@ def fallback_diarization(audio_file: str) -> Any:
         logger.warning("Created emergency single-speaker diarization")
         return annotation
 
-def format_conversation(diarization_result: Any, transcription_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def format_conversation(diarization_result, transcription_segments):
     """
     Align transcription with speaker segments
-    Returns conversation data with speaker labels
+    Returns conversation data with speaker labels and confidence scores
     """
     conversation_data = []  # List to hold speaker segments
     used_segments = set()
     
-    try:
-        # Sort both diarization results and transcription segments by start time
-        diarization_turns = sorted(diarization_result.itertracks(yield_label=True), key=lambda x: x[0].start)
-        transcription_segments = sorted(transcription_segments, key=lambda x: x["start"])
+    # Sort both diarization results and transcription segments by start time
+    diarization_turns = sorted(diarization_result.itertracks(yield_label=True), key=lambda x: x[0].start)
+    transcription_segments = sorted(transcription_segments, key=lambda x: x["start"])
+    
+    for turn, _, speaker in diarization_turns:
+        turn_start = turn.start
+        turn_end = turn.end
+        segment_text = []
+        segment_confidence = []
+        segment_details = []
         
-        for turn, _, speaker in diarization_turns:
-            turn_start = turn.start
-            turn_end = turn.end
-            segment_text = []
-            
-            for seg_idx, segment in enumerate(transcription_segments):
-                if seg_idx in used_segments:
-                    continue  # Skip already used segments
-                    
-                seg_start = segment["start"]
-                seg_end = segment["end"]
+        for seg_idx, segment in enumerate(transcription_segments):
+            if seg_idx in used_segments:
+                continue  # Skip already used segments
                 
-                # Calculate overlap duration
-                overlap_start = max(turn_start, seg_start)
-                overlap_end = min(turn_end, seg_end)
-                overlap_duration = max(0, overlap_end - overlap_start)
+            seg_start = segment["start"]
+            seg_end = segment["end"]
+            
+            # Calculate overlap duration
+            overlap_start = max(turn_start, seg_start)
+            overlap_end = min(turn_end, seg_end)
+            overlap_duration = max(0, overlap_end - overlap_start)
+            
+            # Require at least 50% overlap with the speaker turn
+            segment_duration = seg_end - seg_start
+            # Add safety check for zero-length segments
+            if segment_duration > 0 and overlap_duration / segment_duration >= 0.5:
+                segment_text.append(segment["text"].strip())
                 
-                # Require at least 50% overlap with the speaker turn
-                segment_duration = seg_end - seg_start
-                if segment_duration > 0 and overlap_duration / segment_duration >= 0.5:
-                    segment_text.append(segment["text"].strip())
-                    used_segments.add(seg_idx)  # Mark segment as used
-                    
-            if segment_text:
-                conversation_data.append({
-                    "speaker": speaker,
-                    "text": ' '.join(segment_text).strip(),
-                    "start_time": turn_start,
-                    "end_time": turn_end
-                })
-    except Exception as e:
-        logger.error(f"Error formatting conversation: {str(e)}")
-        
-        # Fallback: assign all unassigned segments to speakers in sequence
-        if not conversation_data:
-            logger.warning("Conversation formatting failed, using emergency fallback")
-            
-            # Reset used segments
-            used_segments = set()
-            
-            # Just assign segments to speakers sequentially
-            current_speaker = 0
-            for seg_idx, segment in enumerate(transcription_segments):
-                if seg_idx in used_segments:
-                    continue
-                    
-                conversation_data.append({
-                    "speaker": str(current_speaker),
+                # Add confidence score if available
+                if "confidence" in segment:
+                    segment_confidence.append(segment["confidence"])
+                
+                # Store full segment details for later reference
+                segment_details.append({
                     "text": segment["text"].strip(),
-                    "start_time": segment["start"],
-                    "end_time": segment["end"]
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "confidence": segment.get("confidence", None),
+                    "confidence_level": segment.get("confidence_level", None),
+                    "words": segment.get("words", [])
                 })
                 
-                used_segments.add(seg_idx)
-                current_speaker = (current_speaker + 1) % 3  # Rotate between 3 speakers
+                used_segments.add(seg_idx)  # Mark segment as used
+                
+        if segment_text:
+            # Prepare the conversation segment
+            conversation_segment = {
+                "speaker": speaker,
+                "text": ' '.join(segment_text).strip(),
+                "start_time": turn_start,
+                "end_time": turn_end
+            }
+            
+            # Add confidence metrics if available
+            if segment_confidence:
+                conversation_segment["confidence"] = round(sum(segment_confidence) / len(segment_confidence), 2)
+                
+                # Categorize the overall segment confidence
+                if conversation_segment["confidence"] >= 90:
+                    conversation_segment["confidence_level"] = "high"
+                elif conversation_segment["confidence"] >= 70:
+                    conversation_segment["confidence_level"] = "medium"
+                else:
+                    conversation_segment["confidence_level"] = "low"
+            
+            # Add detailed segment information
+            if segment_details:
+                conversation_segment["segments"] = segment_details
+            
+            conversation_data.append(conversation_segment)
     
     return conversation_data
 
 def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
-    Process audio file to extract transcript with speaker identification
+    Process audio file to extract transcript with speaker identification and confidence scores
     
     Args:
         audio_file_path: Path to the audio file
@@ -380,65 +529,90 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         'step_times': {},
         'transcript': [],
         'formatted_transcript': [],
-        'language': language or 'auto-detect'
+        'language': language or 'auto-detect',
+        'confidence_metrics': {}
     }
     
     try:
         start_total = time.time()
         
-        # Check if we're dealing with an MP3 file
-        file_ext = Path(audio_file_path).suffix.lower()
-        if file_ext == '.mp3':
-            logger.info(f"Processing MP3 file: {audio_file_path}")
-            metrics['file_type'] = 'mp3'
-        else:
-            metrics['file_type'] = file_ext.lstrip('.')
-        
-        # Step 1: Transcribe with timing
+        # Transcribe with timing
         step_start = time.time()
         transcription_result = transcribe_audio(audio_file_path, language)
-        transcription_segments = transcription_result["segments"]
+        transcription_segments = transcription_result["segments"]  # Contains 'start', 'end', 'text', 'confidence'
         metrics['step_times']['transcription'] = time.time() - step_start
         
-        # Step 2: Extract language if auto-detecting
-        if not language or language == "auto":
-            # Check if whisper detected a language
-            detected_language = None
+        # Include overall confidence metrics if available
+        if "overall_confidence" in transcription_result:
+            metrics['confidence_metrics'] = transcription_result["overall_confidence"]
             
-            # Try different possible locations for the language info
+            # Add counts of low confidence segments
+            if "low_confidence_count" in transcription_result:
+                metrics['confidence_metrics']["low_confidence_count"] = transcription_result["low_confidence_count"]
+                metrics['confidence_metrics']["low_confidence_percentage"] = transcription_result["low_confidence_percentage"]
+        
+        # If language was auto-detected, get the detected language
+        if not language or language == "auto":
+            # First try to get the language from the detected_language field we added
             if 'detected_language' in transcription_result:
                 detected_language = transcription_result['detected_language']
+                metrics['language'] = detected_language  # Store the actual language code
+                logger.info(f"Using explicit detected_language field: {detected_language}")
+            # Fall back to looking in the language field
             elif 'language' in transcription_result:
                 detected_language = transcription_result['language']
-            elif transcription_segments and 'language' in transcription_segments[0]:
-                detected_language = transcription_segments[0]['language']
-            
-            if detected_language:
-                metrics['language'] = detected_language
-                logger.info(f"Detected language: {detected_language}")
+                metrics['language'] = detected_language  # Store the actual language code
+                logger.info(f"Using language field from result: {detected_language}")
+            # Fall back to looking in the segments if needed
+            elif transcription_segments and len(transcription_segments) > 0:
+                first_segment = transcription_segments[0]
+                if 'language' in first_segment:
+                    detected_language = first_segment['language']
+                    metrics['language'] = detected_language  # Store the actual language code
+                    logger.info(f"Extracted language from first segment: {detected_language}")
+                else:
+                    logger.warning(f"No language field in first segment. Keys: {list(first_segment.keys())}")
             else:
-                logger.warning("Could not detect specific language")
+                logger.warning("Could not determine specific language from transcription")
+                # Keep auto-detect in this case
         
-        # Step 3: Diarize with timing - with special handling for MP3
+        # Diarize with timing
+        logger.info(f"Diarizing audio file {audio_file_path}")
         step_start = time.time()
         diarization_result = diarize_audio(audio_file_path)
         metrics['step_times']['diarization'] = time.time() - step_start
         
-        # Step 4: Format conversation
+        # Format with timing
         step_start = time.time()
         conversation_data = format_conversation(diarization_result, transcription_segments)
         metrics['step_times']['formatting'] = time.time() - step_start
         
-        # Step 5: Create formatted transcript
+        # Create enhanced transcript with timestamps and confidence indicators
         formatted_transcript = []
         for seg in conversation_data:
             time_str = format_time(seg['start_time'])
-            formatted_line = f"[{time_str}] Speaker {seg['speaker']}: {seg['text']}"
+            
+            # Add confidence indicator to formatted text if available
+            if 'confidence_level' in seg:
+                confidence_indicator = ""
+                if seg['confidence_level'] == "high":
+                    confidence_indicator = "✓ "  # Check mark for high confidence
+                elif seg['confidence_level'] == "medium":
+                    confidence_indicator = "~ "  # Tilde for medium confidence
+                else:
+                    confidence_indicator = "? "  # Question mark for low confidence
+                
+                formatted_line = f"[{time_str}] {confidence_indicator}Speaker {seg['speaker']}: {seg['text']}"
+            else:
+                formatted_line = f"[{time_str}] Speaker {seg['speaker']}: {seg['text']}"
+                
             formatted_transcript.append(formatted_line)
         
         # Final metrics
         metrics['total_time'] = time.time() - start_total
         metrics['formatted_transcript'] = formatted_transcript
+        
+        # Enhanced transcript with confidence scores
         metrics['transcript'] = [{
             'speaker': seg['speaker'],
             'text': seg['text'],
@@ -446,10 +620,16 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
             'end_time': seg['end_time'],
             'start_time_formatted': format_time(seg['start_time']),
             'end_time_formatted': format_time(seg['end_time']),
+            'confidence': seg.get('confidence', None),  # Include confidence if available
+            'confidence_level': seg.get('confidence_level', None),  # Include confidence level
+            'segments': seg.get('segments', []),  # Include detailed segment info
             'language': metrics['language']
         } for seg in conversation_data]
         
-        logger.info(f"Successfully processed {metrics['file_type']} file in {metrics['total_time']:.2f}s")
+        # Final check to confirm the language is being properly returned
+        logger.info(f"Final language being returned: {metrics['language']}")
+        logger.info(f"Overall confidence: {metrics.get('confidence_metrics', {}).get('average', 'N/A')}%")
+        
         return metrics
     
     except Exception as e:
