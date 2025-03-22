@@ -114,9 +114,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             updateAudioProgress(100, message);
                             
                             // Add confidence stats to the UI only once
-                            if (data.result.confidence_metrics && !document.getElementById('confidenceNotice')) {
+                            if (data.result.confidence_metrics) {
+                                // Remove existing notice if present
+                                const existingNotice = document.getElementById('confidenceNotice');
+                                if (existingNotice) existingNotice.remove();
+                                
                                 const notice = document.createElement('div');
-                                notice.id = 'confidenceNotice';  // Add an id to easily identify this notice later
+                                notice.id = 'confidenceNotice';
                                 notice.className = 'alert alert-info mt-2';
                                 notice.innerHTML = `
                                     <h5>Transcription Confidence</h5>
