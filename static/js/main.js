@@ -113,9 +113,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             
                             updateAudioProgress(100, message);
                             
-                            // Add confidence stats to the UI
-                            if (data.result.confidence_metrics) {
+                            // Add confidence stats to the UI only once
+                            if (data.result.confidence_metrics && !document.getElementById('confidenceNotice')) {
                                 const notice = document.createElement('div');
+                                notice.id = 'confidenceNotice';  // Add an id to easily identify this notice later
                                 notice.className = 'alert alert-info mt-2';
                                 notice.innerHTML = `
                                     <h5>Transcription Confidence</h5>
@@ -127,9 +128,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                         <div class="col-md-6">
                                             <div class="progress mb-2" style="height: 20px;">
                                                 <div class="progress-bar bg-success" role="progressbar" 
-                                                     style="width: ${data.result.confidence_metrics.average}%" 
-                                                     aria-valuenow="${data.result.confidence_metrics.average}" 
-                                                     aria-valuemin="0" aria-valuemax="100">
+                                                    style="width: ${data.result.confidence_metrics.average}%" 
+                                                    aria-valuenow="${data.result.confidence_metrics.average}" 
+                                                    aria-valuemin="0" aria-valuemax="100">
                                                     ${data.result.confidence_metrics.average}%
                                                 </div>
                                             </div>
@@ -211,7 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusText = document.getElementById('audioStatusText');
         
         progressBar.style.width = `${progress}%`;
-        statusText.textContent = message;
+        statusText.innerHTML = message;
         
         if (isError) {
             progressBar.classList.remove('bg-primary');
@@ -814,5 +815,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(() => alertEl.remove(), 150);
             }
         }, 5000);
+    }
+
+    // Add this function somewhere in your main.js
+    function getLanguageDisplayName(languageCode) {
+        const languageMap = {
+            "en": "English",
+            "hi": "Hindi", 
+            "es": "Spanish",
+            "fr": "French",
+            "de": "German",
+            "zh": "Chinese",
+            "ja": "Japanese",
+            "ru": "Russian",
+            "ar": "Arabic",
+            "auto": "Auto-detected"
+        };
+        
+        return languageMap[languageCode] || languageCode;
     }
 });
