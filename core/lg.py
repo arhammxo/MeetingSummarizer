@@ -1,13 +1,87 @@
 import os
 import json
+import re
 from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
 import logging
+
+# Configure logging for this module
+logger = logging.getLogger(__name__)
+
+def robust_json_parse(text):
+    """
+    Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
+    
+    Args:
+        text: Text that should contain JSON
+        
+    Returns:
+        Parsed JSON object or a default structure
+    """
+    import json
+    import re
+    import logging
+    
+    # First, try direct JSON parsing
+    try:
+        # Try to extract JSON if it's embedded in markdown or other text
+        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
+        if json_match:
+            json_str = json_match.group(1)
+            return json.loads(json_str)
+        
+        # Try to find JSON-like structure with curly braces
+        json_match = re.search(r'(\{[\s\S]*\})', text)
+        if json_match:
+            json_str = json_match.group(1)
+            return json.loads(json_str)
+        
+        # If text doesn't have clear JSON markers, try direct parsing
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # If direct parsing fails, try to fix common issues
+        
+        # Remove any non-JSON text before opening brace and after closing brace
+        cleaned_text = re.sub(r'^[^{]*', '', text)
+        cleaned_text = re.sub(r'[^}]*$', '', cleaned_text)
+        
+        try:
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError:
+            # If still failing, try to construct a structured response from the text
+            logger.warning(f"Failed to parse JSON, creating fallback structure from text")
+            
+            # Extract what seem to be key points or summary
+            lines = text.split('\n')
+            key_points = []
+            decisions = []
+            summary = ""
+            
+            for line in lines:
+                line = line.strip()
+                if line and len(line) > 10:  # Only consider substantive lines
+                    # Try to identify what kind of content this is
+                    if "summary" in line.lower() or "overview" in line.lower():
+                        summary = line.split(":", 1)[1].strip() if ":" in line else line
+                    elif any(marker in line.lower() for marker in ["point", "discuss", "topic"]):
+                        key_points.append(line.split(":", 1)[1].strip() if ":" in line else line)
+                    elif any(marker in line.lower() for marker in ["decid", "decision", "conclude"]):
+                        decisions.append(line.split(":", 1)[1].strip() if ":" in line else line)
+                    elif not summary and len(line) < 100:
+                        # Use first substantial text as summary if nothing else found
+                        summary = line
+            
+            return {
+                "summary": summary if summary else "Unable to extract summary from text",
+                "key_points": key_points[:5] if key_points else ["Unable to extract key points"],
+                "decisions": decisions if decisions else [],
+                "action_items": []
+            }
 
 # Define the state of our graph
 class ActionItem(BaseModel):
@@ -105,7 +179,16 @@ def create_analyze_node(language=None):
     - Level of participation across attendees
     - Any areas of disagreement or conflict
 
-    Provide your analysis in a structured JSON format.
+    IMPORTANT: Your response MUST be valid JSON with the following structure:
+    {{
+      "meeting_purpose": "Brief statement of meeting purpose",
+      "main_topics": ["Topic 1", "Topic 2", "Topic 3"],
+      "emotional_tone": "Description of emotional tone",
+      "participation_level": "Description of participation",
+      "disagreement_areas": ["Area 1", "Area 2"]
+    }}
+
+    Do not include any explanatory text before or after the JSON.
 
     {language_instructions}"""
 
@@ -125,11 +208,30 @@ def create_analyze_node(language=None):
             
             # For shorter transcripts, process directly
             if len(transcript) < 8000:
-                analysis = analyze_chain.invoke({
-                    "transcript": transcript,
-                    "participants": participants
-                })
-                return {**state, "analysis": analysis, "current_step": "summarize"}
+                try:
+                    analysis = analyze_chain.invoke({
+                        "transcript": transcript,
+                        "participants": participants
+                    })
+                    return {**state, "analysis": analysis, "current_step": "summarize"}
+                except Exception as e:
+                    logger.warning(f"JSON parsing error in analyze_node: {e}. Attempting recovery...")
+                    
+                    try:
+                        # Fall back to string output and robust parsing
+                        str_chain = analyze_prompt | llm | StrOutputParser()
+                        raw_response = str_chain.invoke({
+                            "transcript": transcript,
+                            "participants": participants
+                        })
+                        
+                        # Use robust parsing
+                        parsed_result = robust_json_parse(raw_response)
+                        logger.info("Successfully recovered JSON structure")
+                        return {**state, "analysis": parsed_result, "current_step": "summarize"}
+                    except Exception as recovery_error:
+                        logger.error(f"Recovery failed: {recovery_error}")
+                        raise
             
             # For longer transcripts, split into chunks and analyze separately
             chunks = chunk_transcript(transcript)
@@ -139,11 +241,37 @@ def create_analyze_node(language=None):
             chunk_analyses = []
             for i, chunk in enumerate(chunks):
                 logging.info(f"Analyzing chunk {i+1}/{len(chunks)}")
-                chunk_analysis = analyze_chain.invoke({
-                    "transcript": chunk,
-                    "participants": participants
-                })
-                chunk_analyses.append(chunk_analysis)
+                try:
+                    chunk_analysis = analyze_chain.invoke({
+                        "transcript": chunk,
+                        "participants": participants
+                    })
+                    chunk_analyses.append(chunk_analysis)
+                except Exception as e:
+                    logger.warning(f"JSON parsing error in chunk {i+1}: {e}. Attempting recovery...")
+                    
+                    try:
+                        # Fall back to string output and robust parsing
+                        str_chain = analyze_prompt | llm | StrOutputParser()
+                        raw_response = str_chain.invoke({
+                            "transcript": chunk,
+                            "participants": participants
+                        })
+                        
+                        # Use robust parsing
+                        parsed_result = robust_json_parse(raw_response)
+                        logger.info(f"Successfully recovered JSON structure for chunk {i+1}")
+                        chunk_analyses.append(parsed_result)
+                    except Exception as recovery_error:
+                        logger.error(f"Recovery failed for chunk {i+1}: {recovery_error}")
+                        # Add a placeholder analysis to keep the process going
+                        chunk_analyses.append({
+                            "meeting_purpose": f"Analysis of chunk {i+1}",
+                            "main_topics": [f"Unable to extract topics from chunk {i+1}"],
+                            "emotional_tone": "Unknown",
+                            "participation_level": "Unknown",
+                            "disagreement_areas": []
+                        })
             
             # Merge analyses
             merged_analysis = merge_analyses(chunk_analyses)
@@ -231,8 +359,14 @@ def create_summarize_node(language=None):
         2. Key Points: Bullet points of important topics discussed
         3. Decisions: Bullet points of decisions made during the meeting
         
-        Your response should be a JSON object with the fields 'summary', 'key_points', and 'decisions'.
-        Keep the summary concise and focused on what matters.
+        VERY IMPORTANT: Your response MUST be valid JSON with the following structure:
+        {{
+          "summary": "Your summary text here",
+          "key_points": ["Point 1", "Point 2", "Point 3"],
+          "decisions": ["Decision 1", "Decision 2"]
+        }}
+        
+        Do not include any explanatory text before or after the JSON.
         
         {language_instructions}"""),
         ("human", """Meeting Transcript: {transcript}
@@ -247,17 +381,49 @@ def create_summarize_node(language=None):
     
     def summarize_node(state: AgentState) -> AgentState:
         """Generate a concise summary of the meeting."""
-        summary_data = summarize_chain.invoke({
-            "transcript": state["transcript"],
-            "analysis": state["analysis"],
-            "participants": state["participants"]
-        })
-        meeting_summary = MeetingSummary(
-            summary=summary_data["summary"],
-            key_points=summary_data["key_points"],
-            decisions=summary_data["decisions"]
-        )
-        return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
+        try:
+            summary_data = summarize_chain.invoke({
+                "transcript": state["transcript"],
+                "analysis": state["analysis"],
+                "participants": state["participants"]
+            })
+            meeting_summary = MeetingSummary(
+                summary=summary_data["summary"],
+                key_points=summary_data["key_points"],
+                decisions=summary_data["decisions"]
+            )
+            return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
+        except Exception as e:
+            logger.warning(f"JSON parsing error in summarize_node: {e}. Attempting recovery...")
+            
+            try:
+                # Fall back to string output and robust parsing
+                str_chain = summarize_prompt | llm | StrOutputParser()
+                raw_response = str_chain.invoke({
+                    "transcript": state["transcript"],
+                    "analysis": state["analysis"],
+                    "participants": state["participants"]
+                })
+                
+                # Use robust parsing
+                parsed_result = robust_json_parse(raw_response)
+                logger.info("Successfully recovered JSON structure for summary")
+                
+                meeting_summary = MeetingSummary(
+                    summary=parsed_result.get("summary", "Error generating summary"),
+                    key_points=parsed_result.get("key_points", ["No key points extracted"]),
+                    decisions=parsed_result.get("decisions", [])
+                )
+                return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
+            except Exception as recovery_error:
+                logger.error(f"Recovery failed: {recovery_error}")
+                # Return a basic summary to keep the process going
+                meeting_summary = MeetingSummary(
+                    summary="Error generating summary",
+                    key_points=["Error in processing"],
+                    decisions=[]
+                )
+                return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
     
     return summarize_node
 
@@ -281,7 +447,7 @@ def create_extract_actions_node(language=None):
         - Any mentioned deadline or due date
         - The priority level (high, medium, low) based on context
         
-        Return your results as a JSON array of action items. If no action items are mentioned, return an empty array.
+        VERY IMPORTANT: Return your results as a JSON array of action items. If no action items are mentioned, return an empty array.
         Each action item should have fields: 'action', 'assignee', 'due_date', and 'priority'.
         
         IMPORTANT: Always provide a string value for each field. If a field is missing:
@@ -290,6 +456,7 @@ def create_extract_actions_node(language=None):
         - For 'assignee': use "Unassigned"
         
         DO NOT return null values - use appropriate string defaults instead.
+        Do not include any explanatory text before or after the JSON array.
         
         {language_instructions}"""),
         ("human", """Meeting Transcript: {transcript}
@@ -304,35 +471,95 @@ def create_extract_actions_node(language=None):
     
     def extract_actions_node(state: AgentState) -> AgentState:
         """Extract action items from the meeting transcript."""
-        action_data = action_chain.invoke({
-            "transcript": state["transcript"],
-            "summary": state["meeting_summary"],
-            "participants": state["participants"]
-        })
-        
-        action_items = []
-        for item in action_data:
-            # Handle possible None values by ensuring all fields are strings
-            action = item.get("action", "")
-            assignee = item.get("assignee", "Unassigned")
+        try:
+            action_data = action_chain.invoke({
+                "transcript": state["transcript"],
+                "summary": state["meeting_summary"],
+                "participants": state["participants"]
+            })
             
-            # Explicitly convert None to strings
-            due_date = item.get("due_date")
-            if due_date is None or due_date == "":
-                due_date = "Not specified"
+            action_items = []
+            for item in action_data:
+                # Handle possible None values by ensuring all fields are strings
+                action = item.get("action", "")
+                assignee = item.get("assignee", "Unassigned")
                 
-            priority = item.get("priority")
-            if priority is None or priority == "":
-                priority = "medium"
+                # Explicitly convert None to strings
+                due_date = item.get("due_date")
+                if due_date is None or due_date == "":
+                    due_date = "Not specified"
+                    
+                priority = item.get("priority")
+                if priority is None or priority == "":
+                    priority = "medium"
+                
+                action_items.append(ActionItem(
+                    action=action,
+                    assignee=assignee,
+                    due_date=due_date,
+                    priority=priority
+                ))
             
-            action_items.append(ActionItem(
-                action=action,
-                assignee=assignee,
-                due_date=due_date,
-                priority=priority
-            ))
-        
-        return {**state, "action_items": action_items, "current_step": "format_output"}
+            return {**state, "action_items": action_items, "current_step": "format_output"}
+        except Exception as e:
+            logger.warning(f"JSON parsing error in extract_actions_node: {e}. Attempting recovery...")
+            
+            try:
+                # Fall back to string output and robust parsing
+                str_chain = action_prompt | llm | StrOutputParser()
+                raw_response = str_chain.invoke({
+                    "transcript": state["transcript"],
+                    "summary": state["meeting_summary"],
+                    "participants": state["participants"]
+                })
+                
+                # Use robust parsing
+                try:
+                    parsed_result = robust_json_parse(raw_response)
+                    if isinstance(parsed_result, list):
+                        action_data = parsed_result
+                    else:
+                        # If we get a dict instead of a list, look for an action_items field
+                        action_data = parsed_result.get("action_items", [])
+                    
+                    logger.info("Successfully recovered action items")
+                except Exception:
+                    # If we can't parse as JSON at all, try to extract action-like patterns
+                    logger.warning("Attempting text-based action extraction")
+                    action_data = []
+                    lines = raw_response.split('\n')
+                    for line in lines:
+                        if (any(word in line.lower() for word in ["action", "task", "todo", "assign"]) 
+                            and len(line) > 10):
+                            action_data.append({"action": line.strip()})
+                
+                action_items = []
+                for item in action_data:
+                    if isinstance(item, dict):
+                        action = item.get("action", "")
+                        assignee = item.get("assignee", "Unassigned")
+                        due_date = item.get("due_date", "Not specified")
+                        priority = item.get("priority", "medium")
+                        
+                        action_items.append(ActionItem(
+                            action=action,
+                            assignee=assignee,
+                            due_date=due_date,
+                            priority=priority
+                        ))
+                    elif isinstance(item, str):
+                        action_items.append(ActionItem(
+                            action=item,
+                            assignee="Unassigned",
+                            due_date="Not specified",
+                            priority="medium"
+                        ))
+                
+                return {**state, "action_items": action_items, "current_step": "format_output"}
+            except Exception as recovery_error:
+                logger.error(f"Recovery failed: {recovery_error}")
+                # Return an empty action items list to keep the process going
+                return {**state, "action_items": [], "current_step": "format_output"}
     
     return extract_actions_node
 
@@ -350,11 +577,11 @@ def create_format_output_node(language=None):
         ("system", f"""You are responsible for creating the final meeting summary and action item report.
         Format the provided information into a well-structured, professional report that can be easily read and shared.
         
-        Your output should be a JSON object with two sections:
+        VERY IMPORTANT: Your output MUST be a JSON object with two sections:
         1. 'meeting_summary': Contains the summary, key points, and decisions
         2. 'action_items': The list of action items with their details
         
-        Make sure the formatting is clean and professional.
+        Do not include any explanatory text before or after the JSON object.
         
         {language_instructions}"""),
         ("human", """Meeting Summary: {meeting_summary}
@@ -371,11 +598,35 @@ def create_format_output_node(language=None):
         meeting_summary_dict = state["meeting_summary"].model_dump()
         action_items_dict = [item.model_dump() for item in state["action_items"]]
         
-        final_output = format_chain.invoke({
-            "meeting_summary": meeting_summary_dict,
-            "action_items": action_items_dict
-        })
-        return {**state, "final_output": final_output, "current_step": "complete"}
+        try:
+            final_output = format_chain.invoke({
+                "meeting_summary": meeting_summary_dict,
+                "action_items": action_items_dict
+            })
+            return {**state, "final_output": final_output, "current_step": "complete"}
+        except Exception as e:
+            logger.warning(f"JSON parsing error in format_output_node: {e}. Attempting recovery...")
+            
+            try:
+                # Fall back to string output and robust parsing
+                str_chain = format_prompt | llm | StrOutputParser()
+                raw_response = str_chain.invoke({
+                    "meeting_summary": meeting_summary_dict,
+                    "action_items": action_items_dict
+                })
+                
+                # Use robust parsing
+                parsed_result = robust_json_parse(raw_response)
+                logger.info("Successfully recovered JSON structure for final output")
+                return {**state, "final_output": parsed_result, "current_step": "complete"}
+            except Exception as recovery_error:
+                logger.error(f"Recovery failed: {recovery_error}")
+                # Return a simple structure using the existing data
+                final_output = {
+                    "meeting_summary": meeting_summary_dict,
+                    "action_items": action_items_dict
+                }
+                return {**state, "final_output": final_output, "current_step": "complete"}
     
     return format_output_node
 
@@ -438,7 +689,7 @@ def summarize_meeting(transcript: str, participants: List[str], language: str = 
         return result["final_output"]
     except Exception as e:
         # Provide meaningful error message
-        print(f"Error processing meeting: {str(e)}")
+        logger.error(f"Error processing meeting: {str(e)}")
         raise Exception(f"Failed to summarize meeting: {str(e)}")
 
 

@@ -1,6 +1,6 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 import re
 import logging
 import json
@@ -8,6 +8,79 @@ import json
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("long_transcript_summarizer")
+
+def robust_json_parse(text):
+    """
+    Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
+    
+    Args:
+        text: Text that should contain JSON
+        
+    Returns:
+        Parsed JSON object or a default structure
+    """
+    import json
+    import re
+    import logging
+    
+    # First, try direct JSON parsing
+    try:
+        # Try to extract JSON if it's embedded in markdown or other text
+        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
+        if json_match:
+            json_str = json_match.group(1)
+            return json.loads(json_str)
+        
+        # Try to find JSON-like structure with curly braces
+        json_match = re.search(r'(\{[\s\S]*\})', text)
+        if json_match:
+            json_str = json_match.group(1)
+            return json.loads(json_str)
+        
+        # If text doesn't have clear JSON markers, try direct parsing
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # If direct parsing fails, try to fix common issues
+        
+        # Remove any non-JSON text before opening brace and after closing brace
+        cleaned_text = re.sub(r'^[^{]*', '', text)
+        cleaned_text = re.sub(r'[^}]*$', '', cleaned_text)
+        
+        try:
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError:
+            # If still failing, try to construct a structured response from the text
+            logger.warning(f"Failed to parse JSON, creating fallback structure from text")
+            
+            # Extract what seem to be key points or summary
+            lines = text.split('\n')
+            key_points = []
+            decisions = []
+            summary = ""
+            action_items = []
+            
+            for line in lines:
+                line = line.strip()
+                if line and len(line) > 10:  # Only consider substantive lines
+                    # Try to identify what kind of content this is
+                    if "summary" in line.lower() or "overview" in line.lower():
+                        summary = line.split(":", 1)[1].strip() if ":" in line else line
+                    elif any(marker in line.lower() for marker in ["point", "discuss", "topic"]):
+                        key_points.append(line.split(":", 1)[1].strip() if ":" in line else line)
+                    elif any(marker in line.lower() for marker in ["decid", "decision", "conclude"]):
+                        decisions.append(line.split(":", 1)[1].strip() if ":" in line else line)
+                    elif any(marker in line.lower() for marker in ["action", "task", "todo", "assign"]):
+                        action_items.append({"action": line.split(":", 1)[1].strip() if ":" in line else line})
+                    elif not summary and len(line) < 100:
+                        # Use first substantial text as summary if nothing else found
+                        summary = line
+            
+            return {
+                "summary": summary if summary else "Unable to extract summary from text",
+                "key_points": key_points[:5] if key_points else ["Unable to extract key points"],
+                "decisions": decisions if decisions else [],
+                "action_items": action_items
+            }
 
 def chunk_transcript_by_time(transcript_data, chunk_minutes=10):
     """
@@ -81,6 +154,20 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         elif language != "en":
             language_instructions = f"Generate your response in the {language} language."
     
+    # Common JSON formatting instructions
+    json_instructions = """
+    VERY IMPORTANT: Your response MUST be valid JSON. Format your response EXACTLY as follows, with no text before or after:
+    
+    {
+      "summary": "Your summary text here",
+      "key_points": ["Point 1", "Point 2", "Point 3"],
+      "decisions": ["Decision 1", "Decision 2"],
+      "action_items": [{"action": "Action text", "assignee": "Person name"}]
+    }
+    
+    Do not include any explanatory text outside the JSON structure.
+    """
+    
     # Determine the appropriate prompt based on whether this is a chunk or final summary
     if not is_final:
         # Prompt for individual chunk summary
@@ -91,13 +178,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
             2. Decisions made
             3. Action items mentioned
             
-            Format your response as a JSON object with these keys:
-            - "summary": A paragraph summarizing this part of the meeting
-            - "key_points": List of important points (2-4 items)
-            - "decisions": List of any decisions made
-            - "action_items": List of action items mentioned, each with "action" and "assignee" if available
-            
-            Keep your summary concise but include all important information.
+            {json_instructions}
             
             {language_instructions}
             """),
@@ -109,35 +190,42 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
             ("system", f"""You are an expert meeting analyst. Create a final summary of a meeting based on these sectional summaries.
             Combine and synthesize the information to provide a coherent overall summary.
             
-            Format your response as a JSON object with these keys:
-            - "summary": A paragraph summarizing the entire meeting
-            - "key_points": List of the most important points (3-5 items)
-            - "decisions": List of all decisions made
-            - "action_items": List of all action items, each with "action", "assignee", and "due_date" if available
-            
-            Eliminate redundancies and provide a clear, structured overview.
+            {json_instructions}
             
             {language_instructions}
             """),
             ("human", "Here are the sectional summaries of the meeting:\n\n{transcript}")
         ])
     
-    # Create chain with JSON output
-    chain = prompt | llm | JsonOutputParser()
-    
     # Process the text
     try:
+        # First try with JSON output parser
+        chain = prompt | llm | JsonOutputParser()
         result = chain.invoke({"transcript": chunk_text})
         return result
-    except Exception as e:
-        logger.error(f"Error summarizing chunk: {e}")
-        # Return a basic structure in case of error
-        return {
-            "summary": f"Error processing this section: {str(e)}",
-            "key_points": [],
-            "decisions": [],
-            "action_items": []
-        }
+    except Exception as json_error:
+        logger.warning(f"JSON parsing error: {json_error}. Attempting recovery...")
+        
+        try:
+            # Fallback to string output and manual parsing
+            str_chain = prompt | llm | StrOutputParser()
+            
+            # Get raw text response
+            raw_response = str_chain.invoke({"transcript": chunk_text})
+            
+            # Use robust parsing
+            parsed_result = robust_json_parse(raw_response)
+            logger.info("Successfully recovered JSON structure")
+            return parsed_result
+        except Exception as e:
+            logger.error(f"Error summarizing chunk, even with recovery: {e}")
+            # Return a basic structure in case of error
+            return {
+                "summary": f"Error processing this section: {str(e)}",
+                "key_points": [],
+                "decisions": [],
+                "action_items": []
+            }
 
 def hierarchical_summarize(transcript_data, language=None, progress_callback=None):
     """
