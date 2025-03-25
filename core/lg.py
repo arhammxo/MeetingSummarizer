@@ -3,9 +3,9 @@ import json
 import re
 from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
 import logging
@@ -168,37 +168,19 @@ def create_analyze_node(language=None):
         elif language != "en":  # For languages other than English
             language_instructions = f"Respond in {language} language."
     
-    # 1. Analyze the transcript
-    from services.llm_service import create_chat_prompt_template
-
-    system_message = f"""You are an expert meeting analyst. Analyze the provided meeting transcript 
+    # 1. Analyze the transcript - using a completely different template approach
+    system_message = SystemMessage(content=f"""You are an expert meeting analyst. Analyze the provided meeting transcript 
     and identify the following elements:
-    - Meeting purpose
-    - Main topics discussed
-    - Emotional tone of the meeting
-    - Level of participation across attendees
-    - Any areas of disagreement or conflict
+    - Meeting purpose: Provide a brief statement of what the meeting was about
+    - Main topics: List the key topics that were discussed (as a JSON array)
+    - Emotional tone: Describe the overall emotional tone of the meeting
+    - Participation level: Describe how evenly participants contributed
+    - Disagreement areas: List any areas where participants disagreed (as a JSON array)
 
-    IMPORTANT: Your response MUST be valid JSON with the following structure:
-    {{
-      "meeting_purpose": "Brief statement of meeting purpose",
-      "main_topics": ["Topic 1", "Topic 2", "Topic 3"],
-      "emotional_tone": "Description of emotional tone",
-      "participation_level": "Description of participation",
-      "disagreement_areas": ["Area 1", "Area 2"]
-    }}
-
-    Do not include any explanatory text before or after the JSON.
-
-    {language_instructions}"""
-
-    user_message = "Here is the meeting transcript: {transcript}\n\nParticipants: {participants}"
-    analyze_prompt = create_chat_prompt_template(system_message, user_message)
+    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
+    {language_instructions}""")
     
-    llm = get_llm()
-    from services.llm_service import create_output_parser
-    json_parser = create_output_parser()
-    analyze_chain = analyze_prompt | llm | json_parser
+    user_template = "Here is the meeting transcript: {transcript}\n\nParticipants: {participants}"
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript to understand context and participants."""
@@ -209,21 +191,26 @@ def create_analyze_node(language=None):
             # For shorter transcripts, process directly
             if len(transcript) < 8000:
                 try:
-                    analysis = analyze_chain.invoke({
-                        "transcript": transcript,
-                        "participants": participants
-                    })
+                    # Create a one-time template without reusing variables
+                    prompt = ChatPromptTemplate.from_messages([
+                        system_message,
+                        HumanMessage(content=user_template.format(
+                            transcript=transcript,
+                            participants=", ".join(participants)
+                        ))
+                    ])
+                    
+                    llm = get_llm()
+                    chain = prompt | llm | JsonOutputParser()
+                    analysis = chain.invoke({})
                     return {**state, "analysis": analysis, "current_step": "summarize"}
                 except Exception as e:
                     logger.warning(f"JSON parsing error in analyze_node: {e}. Attempting recovery...")
                     
                     try:
                         # Fall back to string output and robust parsing
-                        str_chain = analyze_prompt | llm | StrOutputParser()
-                        raw_response = str_chain.invoke({
-                            "transcript": transcript,
-                            "participants": participants
-                        })
+                        str_chain = prompt | llm | StrOutputParser()
+                        raw_response = str_chain.invoke({})
                         
                         # Use robust parsing
                         parsed_result = robust_json_parse(raw_response)
@@ -242,21 +229,26 @@ def create_analyze_node(language=None):
             for i, chunk in enumerate(chunks):
                 logging.info(f"Analyzing chunk {i+1}/{len(chunks)}")
                 try:
-                    chunk_analysis = analyze_chain.invoke({
-                        "transcript": chunk,
-                        "participants": participants
-                    })
+                    # Create a one-time template for each chunk
+                    chunk_prompt = ChatPromptTemplate.from_messages([
+                        system_message,
+                        HumanMessage(content=user_template.format(
+                            transcript=chunk,
+                            participants=", ".join(participants)
+                        ))
+                    ])
+                    
+                    llm = get_llm()
+                    chain = chunk_prompt | llm | JsonOutputParser()
+                    chunk_analysis = chain.invoke({})
                     chunk_analyses.append(chunk_analysis)
                 except Exception as e:
                     logger.warning(f"JSON parsing error in chunk {i+1}: {e}. Attempting recovery...")
                     
                     try:
                         # Fall back to string output and robust parsing
-                        str_chain = analyze_prompt | llm | StrOutputParser()
-                        raw_response = str_chain.invoke({
-                            "transcript": chunk,
-                            "participants": participants
-                        })
+                        str_chain = chunk_prompt | llm | StrOutputParser()
+                        raw_response = str_chain.invoke({})
                         
                         # Use robust parsing
                         parsed_result = robust_json_parse(raw_response)
@@ -350,43 +342,40 @@ def create_summarize_node(language=None):
             language_instructions = f"Respond in {language} language."
     
     # 2. Summarize the meeting
-    summarize_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are an expert meeting summarizer. Based on the meeting transcript and analysis,
-        create a concise summary of the meeting that captures the essence of what was discussed and decided.
-        
-        Follow this structure:
-        1. Summary: A 2-3 sentence overview of the meeting
-        2. Key Points: Bullet points of important topics discussed
-        3. Decisions: Bullet points of decisions made during the meeting
-        
-        VERY IMPORTANT: Your response MUST be valid JSON with the following structure:
-        {{
-          "summary": "Your summary text here",
-          "key_points": ["Point 1", "Point 2", "Point 3"],
-          "decisions": ["Decision 1", "Decision 2"]
-        }}
-        
-        Do not include any explanatory text before or after the JSON.
-        
-        {language_instructions}"""),
-        ("human", """Meeting Transcript: {transcript}
-        
-        Meeting Analysis: {analysis}
-        
-        Participants: {participants}""")
-    ])
+    system_message = SystemMessage(content=f"""You are an expert meeting summarizer. Based on the meeting transcript and analysis,
+    create a concise summary of the meeting that captures the essence of what was discussed and decided.
     
-    llm = get_llm()
-    summarize_chain = summarize_prompt | llm | JsonOutputParser()
+    Provide the following in your JSON response:
+    - summary: A 2-3 sentence overview of the meeting
+    - key_points: A list of important topics discussed 
+    - decisions: A list of decisions made during the meeting
+    
+    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
+    {language_instructions}""")
+    
+    user_template = """Meeting Transcript: {transcript}
+    
+    Meeting Analysis: {analysis}
+    
+    Participants: {participants}"""
     
     def summarize_node(state: AgentState) -> AgentState:
         """Generate a concise summary of the meeting."""
         try:
-            summary_data = summarize_chain.invoke({
-                "transcript": state["transcript"],
-                "analysis": state["analysis"],
-                "participants": state["participants"]
-            })
+            # Create a one-time template
+            prompt = ChatPromptTemplate.from_messages([
+                system_message,
+                HumanMessage(content=user_template.format(
+                    transcript=state["transcript"],
+                    analysis=json.dumps(state["analysis"]),
+                    participants=", ".join(state["participants"])
+                ))
+            ])
+            
+            llm = get_llm()
+            chain = prompt | llm | JsonOutputParser()
+            summary_data = chain.invoke({})
+            
             meeting_summary = MeetingSummary(
                 summary=summary_data["summary"],
                 key_points=summary_data["key_points"],
@@ -398,12 +387,8 @@ def create_summarize_node(language=None):
             
             try:
                 # Fall back to string output and robust parsing
-                str_chain = summarize_prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({
-                    "transcript": state["transcript"],
-                    "analysis": state["analysis"],
-                    "participants": state["participants"]
-                })
+                str_chain = prompt | llm | StrOutputParser()
+                raw_response = str_chain.invoke({})
                 
                 # Use robust parsing
                 parsed_result = robust_json_parse(raw_response)
@@ -437,46 +422,43 @@ def create_extract_actions_node(language=None):
             language_instructions = f"Respond in {language} language."
     
     # 3. Extract action items
-    action_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are an expert at identifying action items from meeting transcripts.
-        Your task is to extract clear action items from the provided meeting transcript.
-        
-        For each action item, identify:
-        - The specific action to be taken
-        - Who is responsible for the action
-        - Any mentioned deadline or due date
-        - The priority level (high, medium, low) based on context
-        
-        VERY IMPORTANT: Return your results as a JSON array of action items. If no action items are mentioned, return an empty array.
-        Each action item should have fields: 'action', 'assignee', 'due_date', and 'priority'.
-        
-        IMPORTANT: Always provide a string value for each field. If a field is missing:
-        - For 'due_date': use "Not specified" 
-        - For 'priority': use "medium"
-        - For 'assignee': use "Unassigned"
-        
-        DO NOT return null values - use appropriate string defaults instead.
-        Do not include any explanatory text before or after the JSON array.
-        
-        {language_instructions}"""),
-        ("human", """Meeting Transcript: {transcript}
-        
-        Meeting Summary: {summary}
-        
-        Participants: {participants}""")
-    ])
+    system_message = SystemMessage(content=f"""You are an expert at identifying action items from meeting transcripts.
+    Your task is to extract clear action items from the provided meeting transcript.
     
-    llm = get_llm()
-    action_chain = action_prompt | llm | JsonOutputParser()
+    For each action item, identify:
+    - action: The specific action to be taken
+    - assignee: Who is responsible for the action
+    - due_date: Any mentioned deadline or due date
+    - priority: The priority level (high, medium, low) based on context
+    
+    Return your results as a JSON array. If no action items are mentioned, return an empty array.
+    For missing fields, use these defaults: "Not specified" for due_date, "medium" for priority, "Unassigned" for assignee.
+    
+    Format your response as a JSON array. DO NOT include explanatory text before or after the JSON.
+    {language_instructions}""")
+    
+    user_template = """Meeting Transcript: {transcript}
+    
+    Meeting Summary: {summary}
+    
+    Participants: {participants}"""
     
     def extract_actions_node(state: AgentState) -> AgentState:
         """Extract action items from the meeting transcript."""
         try:
-            action_data = action_chain.invoke({
-                "transcript": state["transcript"],
-                "summary": state["meeting_summary"],
-                "participants": state["participants"]
-            })
+            # Create a one-time template
+            prompt = ChatPromptTemplate.from_messages([
+                system_message,
+                HumanMessage(content=user_template.format(
+                    transcript=state["transcript"],
+                    summary=state["meeting_summary"].model_dump_json(),
+                    participants=", ".join(state["participants"])
+                ))
+            ])
+            
+            llm = get_llm()
+            chain = prompt | llm | JsonOutputParser()
+            action_data = chain.invoke({})
             
             action_items = []
             for item in action_data:
@@ -506,12 +488,8 @@ def create_extract_actions_node(language=None):
             
             try:
                 # Fall back to string output and robust parsing
-                str_chain = action_prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({
-                    "transcript": state["transcript"],
-                    "summary": state["meeting_summary"],
-                    "participants": state["participants"]
-                })
+                str_chain = prompt | llm | StrOutputParser()
+                raw_response = str_chain.invoke({})
                 
                 # Use robust parsing
                 try:
@@ -573,24 +551,19 @@ def create_format_output_node(language=None):
             language_instructions = f"Respond in {language} language."
     
     # 4. Format the final output
-    format_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are responsible for creating the final meeting summary and action item report.
-        Format the provided information into a well-structured, professional report that can be easily read and shared.
-        
-        VERY IMPORTANT: Your output MUST be a JSON object with two sections:
-        1. 'meeting_summary': Contains the summary, key points, and decisions
-        2. 'action_items': The list of action items with their details
-        
-        Do not include any explanatory text before or after the JSON object.
-        
-        {language_instructions}"""),
-        ("human", """Meeting Summary: {meeting_summary}
-        
-        Action Items: {action_items}""")
-    ])
+    system_message = SystemMessage(content=f"""You are responsible for creating the final meeting summary and action item report.
+    Format the provided information into a well-structured, professional report.
     
-    llm = get_llm()
-    format_chain = format_prompt | llm | JsonOutputParser()
+    Your output should be a JSON object with two sections:
+    - meeting_summary: Contains the summary, key points, and decisions
+    - action_items: The list of action items with their details
+    
+    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
+    {language_instructions}""")
+    
+    user_template = """Meeting Summary: {meeting_summary}
+    
+    Action Items: {action_items}"""
     
     def format_output_node(state: AgentState) -> AgentState:
         """Format the final output with the meeting summary and action items."""
@@ -599,21 +572,26 @@ def create_format_output_node(language=None):
         action_items_dict = [item.model_dump() for item in state["action_items"]]
         
         try:
-            final_output = format_chain.invoke({
-                "meeting_summary": meeting_summary_dict,
-                "action_items": action_items_dict
-            })
+            # Create a one-time template
+            prompt = ChatPromptTemplate.from_messages([
+                system_message,
+                HumanMessage(content=user_template.format(
+                    meeting_summary=json.dumps(meeting_summary_dict, indent=2),
+                    action_items=json.dumps(action_items_dict, indent=2)
+                ))
+            ])
+            
+            llm = get_llm()
+            chain = prompt | llm | JsonOutputParser()
+            final_output = chain.invoke({})
             return {**state, "final_output": final_output, "current_step": "complete"}
         except Exception as e:
             logger.warning(f"JSON parsing error in format_output_node: {e}. Attempting recovery...")
             
             try:
                 # Fall back to string output and robust parsing
-                str_chain = format_prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({
-                    "meeting_summary": meeting_summary_dict,
-                    "action_items": action_items_dict
-                })
+                str_chain = prompt | llm | StrOutputParser()
+                raw_response = str_chain.invoke({})
                 
                 # Use robust parsing
                 parsed_result = robust_json_parse(raw_response)

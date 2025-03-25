@@ -1,5 +1,6 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 import re
 import logging
@@ -154,54 +155,53 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         elif language != "en":
             language_instructions = f"Generate your response in the {language} language."
     
-    # Common JSON formatting instructions
-    json_instructions = """
-    VERY IMPORTANT: Your response MUST be valid JSON. Format your response EXACTLY as follows, with no text before or after:
-    
-    {
-      "summary": "Your summary text here",
-      "key_points": ["Point 1", "Point 2", "Point 3"],
-      "decisions": ["Decision 1", "Decision 2"],
-      "action_items": [{"action": "Action text", "assignee": "Person name"}]
-    }
-    
-    Do not include any explanatory text outside the JSON structure.
-    """
-    
-    # Determine the appropriate prompt based on whether this is a chunk or final summary
+    # Determine the appropriate content based on whether this is a chunk or final summary
     if not is_final:
         # Prompt for individual chunk summary
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are an expert meeting analyst. Summarize this chunk of a meeting transcript.
-            Focus on:
-            1. Key points discussed
-            2. Decisions made
-            3. Action items mentioned
-            
-            {json_instructions}
-            
-            {language_instructions}
-            """),
-            ("human", "Here is a chunk of the meeting transcript:\n\n{transcript}")
-        ])
+        system_content = f"""You are an expert meeting analyst. Summarize this chunk of a meeting transcript.
+        Focus on:
+        1. Key points discussed
+        2. Decisions made
+        3. Action items mentioned
+        
+        Format your response as JSON with these fields:
+        - summary: A paragraph summarizing this part of the meeting
+        - key_points: List of important points (2-4 items)
+        - decisions: List of any decisions made
+        - action_items: List of action items mentioned, each with "action" and "assignee" if available
+        
+        Keep your summary concise but include all important information.
+        {language_instructions}
+        """
+        
+        human_content = f"Here is a chunk of the meeting transcript:\n\n{chunk_text}"
     else:
         # Prompt for final summary (combining chunk summaries)
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are an expert meeting analyst. Create a final summary of a meeting based on these sectional summaries.
-            Combine and synthesize the information to provide a coherent overall summary.
-            
-            {json_instructions}
-            
-            {language_instructions}
-            """),
-            ("human", "Here are the sectional summaries of the meeting:\n\n{transcript}")
-        ])
+        system_content = f"""You are an expert meeting analyst. Create a final summary of a meeting based on these sectional summaries.
+        Combine and synthesize the information to provide a coherent overall summary.
+        
+        Format your response as JSON with these fields:
+        - summary: A paragraph summarizing the entire meeting
+        - key_points: List of the most important points (3-5 items)
+        - decisions: List of all decisions made
+        - action_items: List of all action items, each with "action", "assignee", and "due_date" if available
+        
+        Eliminate redundancies and provide a clear, structured overview.
+        {language_instructions}
+        """
+        
+        human_content = f"Here are the sectional summaries of the meeting:\n\n{chunk_text}"
+    
+    # Create messages directly
+    system_message = SystemMessage(content=system_content)
+    human_message = HumanMessage(content=human_content)
     
     # Process the text
     try:
         # First try with JSON output parser
+        prompt = ChatPromptTemplate.from_messages([system_message, human_message])
         chain = prompt | llm | JsonOutputParser()
-        result = chain.invoke({"transcript": chunk_text})
+        result = chain.invoke({})
         return result
     except Exception as json_error:
         logger.warning(f"JSON parsing error: {json_error}. Attempting recovery...")
@@ -211,7 +211,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
             str_chain = prompt | llm | StrOutputParser()
             
             # Get raw text response
-            raw_response = str_chain.invoke({"transcript": chunk_text})
+            raw_response = str_chain.invoke({})
             
             # Use robust parsing
             parsed_result = robust_json_parse(raw_response)
