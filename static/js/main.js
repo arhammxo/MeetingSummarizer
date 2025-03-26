@@ -65,6 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         pollInterval = setInterval(async () => {
             try {
+                console.log(`Polling job status for job ID: ${jobId}`);
                 const response = await fetch(`/api/job/${jobId}`);
                 
                 if (!response.ok) {
@@ -72,20 +73,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 const data = await response.json();
+                console.log("Received job status data:", data);
+                
+                // Add debug logging for confidence metrics
+                if (data.result) {
+                    console.log("Result data received:", data.result);
+                    if (data.result.confidence_metrics) {
+                        console.log("Confidence metrics found:", data.result.confidence_metrics);
+                    } else {
+                        console.log("No confidence metrics in result data");
+                    }
+                }
                 
                 // Update progress
                 updateAudioProgress(data.progress || 0, data.message || 'Processing...');
                 
                 // Check if job is complete
                 if (data.status === 'completed') {
+                    console.log("Job completed successfully");
                     clearInterval(pollInterval);
                     
                     // Store transcript data
                     if (data.result && data.result.transcript) {
+                        console.log("Transcript data received");
                         currentTranscript = data.result;
                         
                         // Show detected language in UI
                         if (data.result.language) {
+                            console.log("Detected language:", data.result.language);
                             const detectedLang = data.result.language;
                             const languageDisplay = getLanguageDisplayName(detectedLang);
                             
@@ -115,27 +130,41 @@ document.addEventListener('DOMContentLoaded', () => {
                             
                             // Add confidence stats to the UI only once
                             if (data.result.confidence_metrics) {
+                                console.log("Creating confidence notice box with metrics:", data.result.confidence_metrics);
+                                
                                 // Remove existing notice if present
                                 const existingNotice = document.getElementById('confidenceNotice');
-                                if (existingNotice) existingNotice.remove();
+                                if (existingNotice) {
+                                    console.log("Removing existing confidence notice");
+                                    existingNotice.remove();
+                                }
                                 
                                 const notice = document.createElement('div');
                                 notice.id = 'confidenceNotice';
                                 notice.className = 'alert alert-info mt-2';
+                                
+                                // Log the metrics being used
+                                const metrics = data.result.confidence_metrics;
+                                console.log("Using confidence metrics:", {
+                                    average: metrics.average,
+                                    min: metrics.min,
+                                    max: metrics.max
+                                });
+                                
                                 notice.innerHTML = `
                                     <h5>Transcription Confidence</h5>
                                     <div class="row">
                                         <div class="col-md-6">
-                                            <p><strong>Average:</strong> ${data.result.confidence_metrics.average}%</p>
-                                            <p><strong>Range:</strong> ${data.result.confidence_metrics.min}% - ${data.result.confidence_metrics.max}%</p>
+                                            <p><strong>Average:</strong> ${metrics.average}%</p>
+                                            <p><strong>Range:</strong> ${metrics.min}% - ${metrics.max}%</p>
                                         </div>
                                         <div class="col-md-6">
                                             <div class="progress mb-2" style="height: 20px;">
                                                 <div class="progress-bar bg-success" role="progressbar" 
-                                                    style="width: ${data.result.confidence_metrics.average}%" 
-                                                    aria-valuenow="${data.result.confidence_metrics.average}" 
+                                                    style="width: ${metrics.average}%" 
+                                                    aria-valuenow="${metrics.average}" 
                                                     aria-valuemin="0" aria-valuemax="100">
-                                                    ${data.result.confidence_metrics.average}%
+                                                    ${metrics.average}%
                                                 </div>
                                             </div>
                                             <small class="text-muted">
@@ -146,7 +175,16 @@ document.addEventListener('DOMContentLoaded', () => {
                                         </div>
                                     </div>
                                 `;
-                                document.getElementById('transcriptPreview').appendChild(notice);
+                                
+                                const transcriptPreview = document.getElementById('transcriptPreview');
+                                if (transcriptPreview) {
+                                    console.log("Appending confidence notice to transcript preview");
+                                    transcriptPreview.appendChild(notice);
+                                } else {
+                                    console.error("Could not find transcriptPreview element");
+                                }
+                            } else {
+                                console.log("No confidence metrics available in result data");
                             }
                         }
                         

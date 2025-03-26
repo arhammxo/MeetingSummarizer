@@ -131,7 +131,7 @@ def transcribe_audio_chunk(chunk_path, offset_seconds=0, language=None):
         language: Optional language code
         
     Returns:
-        List of transcription segments with adjusted timestamps
+        List of transcription segments with adjusted timestamps and confidence scores
     """
     # Load a larger model for better multilingual support
     model = whisper.load_model("medium")
@@ -152,10 +152,24 @@ def transcribe_audio_chunk(chunk_path, offset_seconds=0, language=None):
         result = model.transcribe(audio, language=detected_language)
         logger.info(f"Detected language: {detected_language}")
     
-    # Adjust timestamps by adding the offset
+    # Adjust timestamps and add confidence information
     for segment in result["segments"]:
         segment["start"] += offset_seconds
         segment["end"] += offset_seconds
+        
+        # Extract or estimate confidence
+        if "avg_logprob" in segment:
+            logprob = segment["avg_logprob"]
+            confidence = min(100, max(0, 100 + 20 * logprob))
+            segment["confidence"] = round(confidence, 2)
+            
+            # Add confidence level categorization
+            if confidence >= 90:
+                segment["confidence_level"] = "high"
+            elif confidence >= 70:
+                segment["confidence_level"] = "medium"
+            else:
+                segment["confidence_level"] = "low"
     
     return result["segments"]
 
@@ -229,9 +243,9 @@ def merge_diarization_results(diarization_results):
 def format_conversation(diarization_turns, transcription_segments):
     """
     Align transcription with speaker segments
-    Returns conversation data with speaker labels
+    Returns conversation data with speaker labels and confidence scores
     """
-    conversation_data = []  # List to hold speaker segments
+    conversation_data = []
     used_segments = set()
     
     # Sort transcription segments by start time
@@ -241,33 +255,53 @@ def format_conversation(diarization_turns, transcription_segments):
         turn_start = turn.start
         turn_end = turn.end
         segment_text = []
+        segment_confidence = []
         
         for seg_idx, segment in enumerate(transcription_segments):
             if seg_idx in used_segments:
-                continue  # Skip already used segments
+                continue
                 
             seg_start = segment["start"]
             seg_end = segment["end"]
             
-            # Calculate overlap duration
+            # Calculate overlap
             overlap_start = max(turn_start, seg_start)
             overlap_end = min(turn_end, seg_end)
             overlap_duration = max(0, overlap_end - overlap_start)
             
-            # Require at least 50% overlap with the speaker turn
             segment_duration = seg_end - seg_start
-            # Avoid division by zero
             if segment_duration > 0 and overlap_duration / segment_duration >= 0.5:
                 segment_text.append(segment["text"].strip())
-                used_segments.add(seg_idx)  # Mark segment as used
+                
+                # Add confidence score collection
+                if "confidence" in segment:
+                    segment_confidence.append(segment["confidence"])
+                
+                used_segments.add(seg_idx)
                 
         if segment_text:
-            conversation_data.append({
+            # Create conversation segment with confidence information
+            conversation_segment = {
                 "speaker": speaker,
                 "text": ' '.join(segment_text).strip(),
                 "start_time": turn_start,
                 "end_time": turn_end
-            })
+            }
+            
+            # Add confidence metrics if available
+            if segment_confidence:
+                avg_confidence = sum(segment_confidence) / len(segment_confidence)
+                conversation_segment["confidence"] = round(avg_confidence, 2)
+                
+                # Add confidence level categorization
+                if avg_confidence >= 90:
+                    conversation_segment["confidence_level"] = "high"
+                elif avg_confidence >= 70:
+                    conversation_segment["confidence_level"] = "medium"
+                else:
+                    conversation_segment["confidence_level"] = "low"
+            
+            conversation_data.append(conversation_segment)
     
     return conversation_data
 
@@ -403,11 +437,25 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         conversation_data = format_conversation(merged_diarization_turns, all_transcription_segments)
         metrics['step_times']['formatting'] = time.time() - step_start
         
-        # Create enhanced transcript with timestamps
+        # Create enhanced transcript with timestamps and confidence indicators
         formatted_transcript = []
         for seg in conversation_data:
             time_str = format_time(seg['start_time'])
-            formatted_line = f"[{time_str}] Speaker {seg['speaker']}: {seg['text']}"
+            
+            # Add confidence indicator to formatted text if available
+            if 'confidence_level' in seg:
+                confidence_indicator = ""
+                if seg['confidence_level'] == "high":
+                    confidence_indicator = "✓ "  # Check mark for high confidence
+                elif seg['confidence_level'] == "medium":
+                    confidence_indicator = "~ "  # Tilde for medium confidence
+                else:
+                    confidence_indicator = "? "  # Question mark for low confidence
+                
+                formatted_line = f"[{time_str}] {confidence_indicator}Speaker {seg['speaker']}: {seg['text']}"
+            else:
+                formatted_line = f"[{time_str}] Speaker {seg['speaker']}: {seg['text']}"
+                
             formatted_transcript.append(formatted_line)
         
         # Final metrics
@@ -421,6 +469,24 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             'start_time_formatted': format_time(seg['start_time']),
             'end_time_formatted': format_time(seg['end_time'])
         } for seg in conversation_data]
+        
+        # Calculate overall confidence statistics
+        if len(metrics['transcript']) > 0:
+            # Calculate confidence metrics from all segments that have confidence scores
+            confidences = [seg.get('confidence', 0) for seg in metrics['transcript'] if 'confidence' in seg]
+            if confidences:
+                metrics['confidence_metrics'] = {
+                    "average": round(sum(confidences) / len(confidences), 2),
+                    "min": round(min(confidences), 2),
+                    "max": round(max(confidences), 2)
+                }
+                
+                # Calculate number and percentage of low confidence segments
+                low_confidence_segments = [s for s in metrics['transcript'] if s.get('confidence_level') == 'low']
+                metrics['confidence_metrics']["low_confidence_count"] = len(low_confidence_segments)
+                metrics['confidence_metrics']["low_confidence_percentage"] = round(
+                    100 * len(low_confidence_segments) / len(metrics['transcript']), 2
+                )
         
         if progress_callback:
             progress_callback(100, "Processing complete")

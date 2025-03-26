@@ -166,12 +166,43 @@ def process_long_audio(
         # Sort by start time
         all_conversation_data.sort(key=lambda x: x["start_time"])
         
-        # Create formatted transcript
+        # Create formatted transcript with confidence indicators
         formatted_transcript = []
         for seg in all_conversation_data:
             time_str = format_time(seg['start_time'])
-            formatted_line = f"[{time_str}] Speaker {seg['speaker']}: {seg['text']}"
+            
+            # Add confidence indicator based on confidence level if available
+            if 'confidence_level' in seg:
+                confidence_indicator = ""
+                if seg['confidence_level'] == "high":
+                    confidence_indicator = "✓ "  # Check mark for high confidence
+                elif seg['confidence_level'] == "medium":
+                    confidence_indicator = "~ "  # Tilde for medium confidence
+                else:
+                    confidence_indicator = "? "  # Question mark for low confidence
+                
+                formatted_line = f"[{time_str}] {confidence_indicator}Speaker {seg['speaker']}: {seg['text']}"
+            else:
+                formatted_line = f"[{time_str}] Speaker {seg['speaker']}: {seg['text']}"
+                
             formatted_transcript.append(formatted_line)
+        
+        # Calculate confidence metrics from all segments with confidence scores
+        if all_conversation_data:
+            confidences = [seg.get('confidence', 0) for seg in all_conversation_data if 'confidence' in seg]
+            if confidences:
+                metrics['confidence_metrics'] = {
+                    "average": round(sum(confidences) / len(confidences), 2),
+                    "min": round(min(confidences), 2),
+                    "max": round(max(confidences), 2)
+                }
+                
+                # Calculate low confidence segments stats
+                low_confidence_segments = [s for s in all_conversation_data if s.get('confidence_level') == 'low']
+                metrics['confidence_metrics']["low_confidence_count"] = len(low_confidence_segments)
+                metrics['confidence_metrics']["low_confidence_percentage"] = round(
+                    100 * len(low_confidence_segments) / len(all_conversation_data), 2
+                )
         
         # Final metrics
         metrics['total_time'] = time.time() - start_total

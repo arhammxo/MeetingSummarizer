@@ -256,9 +256,20 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
         detected_language = result.get('language', 'auto-detect')
         logger.info(f"Detected language for audio: {detected_language}")
         
-        # Save the result
-        save_job_result(job_id, result)
-        update_job_status(job_id, JobStatus.COMPLETED, "Audio processing complete", progress=100)
+        # Save the result with confidence metrics preservation
+        if result:
+            # Log confidence metrics if present
+            if "confidence_metrics" in result:
+                logger.info(f"Saving confidence metrics: {result['confidence_metrics']}")
+            else:
+                logger.warning("No confidence metrics found in processing result")
+            
+            # Ensure all result fields are preserved
+            save_job_result(job_id, result)
+            update_job_status(job_id, JobStatus.COMPLETED, "Audio processing complete", progress=100)
+        else:
+            logger.error("No result received from audio processing")
+            update_job_status(job_id, JobStatus.FAILED, "No result received from audio processing")
             
     except Exception as e:
         logger.error(f"Error in background processing: {str(e)}")
