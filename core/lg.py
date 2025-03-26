@@ -30,7 +30,7 @@ def robust_json_parse(text):
     # First, try direct JSON parsing
     try:
         # Try to extract JSON if it's embedded in markdown or other text
-        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
+        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
         if json_match:
             json_str = json_match.group(1)
             return json.loads(json_str)
@@ -56,33 +56,180 @@ def robust_json_parse(text):
             # If still failing, try to construct a structured response from the text
             logger.warning(f"Failed to parse JSON, creating fallback structure from text")
             
+            # Check if text is just a simple value (int, string)
+            if text.strip().isdigit():
+                logger.warning(f"Text is just a number: {text}")
+                return {"value": int(text.strip())}
+                
             # Extract what seem to be key points or summary
             lines = text.split('\n')
             key_points = []
             decisions = []
+            topics = []
             summary = ""
+            action_items = []
+            meeting_purpose = ""
+            emotional_tone = ""
+            participation_level = ""
+            disagreement_areas = []
+            
+            # First pass to identify section headers
+            in_summary_section = False
+            in_key_points_section = False
+            in_decisions_section = False
+            in_action_items_section = False
+            in_topics_section = False
             
             for line in lines:
                 line = line.strip()
-                if line and len(line) > 10:  # Only consider substantive lines
-                    # Try to identify what kind of content this is
-                    if "summary" in line.lower() or "overview" in line.lower():
-                        summary = line.split(":", 1)[1].strip() if ":" in line else line
-                    elif any(marker in line.lower() for marker in ["point", "discuss", "topic"]):
-                        key_points.append(line.split(":", 1)[1].strip() if ":" in line else line)
-                    elif any(marker in line.lower() for marker in ["decid", "decision", "conclude"]):
-                        decisions.append(line.split(":", 1)[1].strip() if ":" in line else line)
-                    elif not summary and len(line) < 100:
-                        # Use first substantial text as summary if nothing else found
-                        summary = line
+                if not line:
+                    continue
+                    
+                # Try to identify sections based on common headers
+                line_lower = line.lower()
+                if "summary:" in line_lower or "overview:" in line_lower:
+                    in_summary_section = True
+                    in_key_points_section = False
+                    in_decisions_section = False
+                    in_action_items_section = False
+                    in_topics_section = False
+                    # Extract summary if on same line
+                    if ":" in line:
+                        summary = line.split(":", 1)[1].strip()
+                    continue
+                
+                if "key point" in line_lower or "main point" in line_lower:
+                    in_summary_section = False
+                    in_key_points_section = True
+                    in_decisions_section = False
+                    in_action_items_section = False
+                    in_topics_section = False
+                    continue
+                
+                if "decision" in line_lower or "conclude" in line_lower:
+                    in_summary_section = False
+                    in_key_points_section = False
+                    in_decisions_section = True
+                    in_action_items_section = False
+                    in_topics_section = False
+                    continue
+                
+                if "action" in line_lower or "task" in line_lower or "todo" in line_lower:
+                    in_summary_section = False
+                    in_key_points_section = False
+                    in_decisions_section = False
+                    in_action_items_section = True
+                    in_topics_section = False
+                    continue
+                    
+                if "topic" in line_lower or "discuss" in line_lower:
+                    in_summary_section = False
+                    in_key_points_section = False
+                    in_decisions_section = False
+                    in_action_items_section = False
+                    in_topics_section = True
+                    continue
+                
+                # Extract meeting purpose
+                if "meeting purpose" in line_lower or "purpose:" in line_lower or "purpose of the meeting" in line_lower:
+                    if ":" in line:
+                        meeting_purpose = line.split(":", 1)[1].strip()
+                    else:
+                        meeting_purpose = line
+                    continue
+                    
+                # Extract emotional tone
+                if "emotional tone" in line_lower or "tone:" in line_lower:
+                    if ":" in line:
+                        emotional_tone = line.split(":", 1)[1].strip()
+                    else:
+                        emotional_tone = line
+                    continue
+                    
+                # Extract participation level
+                if "participation" in line_lower or "participation level" in line_lower:
+                    if ":" in line:
+                        participation_level = line.split(":", 1)[1].strip()
+                    else:
+                        participation_level = line
+                    continue
+                
+                # Process line based on current section
+                if in_summary_section and not summary:
+                    summary = line
+                elif in_key_points_section:
+                    # Check if it's a bullet point
+                    if line.startswith("-") or line.startswith("*") or line.startswith("•"):
+                        key_points.append(line[1:].strip())
+                    # If not a bullet but in key points section, still add it
+                    elif len(line) > 10:
+                        key_points.append(line)
+                elif in_decisions_section:
+                    if line.startswith("-") or line.startswith("*") or line.startswith("•"):
+                        decisions.append(line[1:].strip())
+                    elif len(line) > 10:
+                        decisions.append(line)
+                elif in_action_items_section:
+                    if line.startswith("-") or line.startswith("*") or line.startswith("•"):
+                        line_text = line[1:].strip()
+                        action_info = {"action": line_text}
+                        
+                        # Try to extract assignee if present
+                        assignee_match = re.search(r'\((assigned to|assignee):\s*(.*?)\)', line_text, re.IGNORECASE)
+                        if assignee_match:
+                            action_info["assignee"] = assignee_match.group(2).strip()
+                            
+                        action_items.append(action_info)
+                    elif len(line) > 10:
+                        action_items.append({"action": line})
+                elif in_topics_section:
+                    if line.startswith("-") or line.startswith("*") or line.startswith("•"):
+                        topics.append(line[1:].strip())
+                    elif len(line) > 10:
+                        topics.append(line)
+                elif any(word in line_lower for word in ["disagreement", "conflict", "disagree"]):
+                    disagreement_areas.append(line)
+                elif not summary and len(line) > 10 and len(line) < 200:
+                    # If no specific sections found yet and this looks like a good summary
+                    summary = line
             
-            return {
+            # Second pass for lines not captured in sections
+            if not summary or not key_points:
+                for line in lines:
+                    line = line.strip()
+                    if line and len(line) > 10:
+                        if not summary and len(line) < 200:
+                            summary = line
+                        elif not in_key_points_section and len(key_points) < 3 and not any(kp in line for kp in key_points):
+                            # Only add as key point if not already captured and reasonable length
+                            if len(line) < 150:
+                                key_points.append(line)
+            
+            # Check if we have any main topics from explicit sections
+            main_topics = topics if topics else key_points
+            
+            # Construct a comprehensive response
+            result = {
                 "summary": summary if summary else "Unable to extract summary from text",
                 "key_points": key_points[:5] if key_points else ["Unable to extract key points"],
                 "decisions": decisions if decisions else [],
-                "action_items": []
+                "action_items": action_items if action_items else []
             }
-
+            
+            # Add analysis fields if they exist
+            if meeting_purpose:
+                result["meeting_purpose"] = meeting_purpose
+            if emotional_tone:
+                result["emotional_tone"] = emotional_tone
+            if participation_level:
+                result["participation_level"] = participation_level
+            if disagreement_areas:
+                result["disagreement_areas"] = disagreement_areas
+            if topics:
+                result["main_topics"] = topics
+                
+            return result
+        
 # Define the state of our graph
 class ActionItem(BaseModel):
     """An action item extracted from the meeting."""
@@ -130,12 +277,41 @@ def merge_analyses(analyses):
     if len(analyses) == 1:
         return analyses[0]
     
+    # Ensure we're working with dictionaries for each analysis
+    validated_analyses = []
+    for analysis in analyses:
+        if isinstance(analysis, dict):
+            validated_analyses.append(analysis)
+        elif isinstance(analysis, (int, float, str)):
+            # Convert primitive types to a basic analysis dict
+            logger.warning(f"Received non-dictionary analysis: {analysis}, converting to basic structure")
+            validated_analyses.append({
+                "meeting_purpose": str(analysis) if analysis else "Unknown purpose",
+                "main_topics": [],
+                "emotional_tone": "Unknown",
+                "participation_level": "Unknown",
+                "disagreement_areas": []
+            })
+        else:
+            logger.warning(f"Skipping invalid analysis type: {type(analysis)}")
+            continue
+    
+    # If we have no valid analyses after filtering, return empty dict
+    if not validated_analyses:
+        return {
+            "meeting_purpose": "Unable to determine purpose",
+            "main_topics": ["Unable to extract topics"],
+            "emotional_tone": "Unknown",
+            "participation_level": "Unknown",
+            "disagreement_areas": []
+        }
+    
     # Initialize with the first analysis
     merged = {
-        "meeting_purpose": analyses[0].get("meeting_purpose", ""),
+        "meeting_purpose": validated_analyses[0].get("meeting_purpose", ""),
         "main_topics": [],
-        "emotional_tone": analyses[0].get("emotional_tone", ""),
-        "participation_level": analyses[0].get("participation_level", ""),
+        "emotional_tone": validated_analyses[0].get("emotional_tone", ""),
+        "participation_level": validated_analyses[0].get("participation_level", ""),
         "disagreement_areas": []
     }
     
@@ -143,14 +319,30 @@ def merge_analyses(analyses):
     all_topics = set()
     all_disagreements = set()
     
-    for analysis in analyses:
-        # Add topics
-        for topic in analysis.get("main_topics", []):
-            all_topics.add(topic)
+    for analysis in validated_analyses:
+        # Add topics - ensure it's a list before accessing
+        topics = analysis.get("main_topics", [])
+        if not isinstance(topics, list):
+            logger.warning(f"main_topics is not a list: {topics}, converting to list")
+            if topics:
+                topics = [str(topics)]
+            else:
+                topics = []
+                
+        for topic in topics:
+            all_topics.add(str(topic))  # Convert to string to ensure it's hashable
         
-        # Add disagreement areas
-        for area in analysis.get("disagreement_areas", []):
-            all_disagreements.add(area)
+        # Add disagreement areas - ensure it's a list before accessing
+        disagreements = analysis.get("disagreement_areas", [])
+        if not isinstance(disagreements, list):
+            logger.warning(f"disagreement_areas is not a list: {disagreements}, converting to list")
+            if disagreements:
+                disagreements = [str(disagreements)]
+            else:
+                disagreements = []
+                
+        for area in disagreements:
+            all_disagreements.add(str(area))  # Convert to string to ensure it's hashable
     
     # Update merged analysis
     merged["main_topics"] = list(all_topics)
@@ -412,6 +604,76 @@ def create_summarize_node(language=None):
     
     return summarize_node
 
+def extract_actions_from_text(text, state):
+    """Extract action items from free text"""
+    action_items = []
+    lines = text.split('\n')
+    
+    # First look for action item headers
+    in_action_section = False
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        line_lower = line.lower()
+        
+        # Check if this is an action section header
+        if "action" in line_lower and ("item" in line_lower or ":" in line):
+            in_action_section = True
+            continue
+            
+        # Process lines in action section
+        if in_action_section:
+            # Check if it's a bullet or numbered point
+            if (line.startswith("-") or line.startswith("*") or line.startswith("•") or 
+                re.match(r'^\d+\.', line)):
+                
+                # Extract the action text
+                action_text = re.sub(r'^[-*•\d.]+\s*', '', line)
+                
+                # Parse for assignee
+                assignee = "Unassigned"
+                assignee_match = re.search(r'\((?:assigned to|assignee):\s*(.*?)\)', line, re.IGNORECASE)
+                if assignee_match:
+                    assignee = assignee_match.group(1).strip()
+                    # Remove the assignee part from action text
+                    action_text = re.sub(r'\((?:assigned to|assignee):\s*.*?\)', '', action_text).strip()
+                
+                # Add the action item
+                action_items.append({
+                    "action": action_text,
+                    "assignee": assignee
+                })
+            elif len(line) > 10 and not line.startswith("#"):
+                # Non-bullet point but still might be an action
+                action_items.append({"action": line})
+        
+    # If no action section was found, look for sentences that sound like actions
+    if not in_action_section or not action_items:
+        for line in lines:
+            line = line.strip().rstrip(".")
+            if len(line) > 10 and len(line) < 200:
+                # Look for action-like sentences
+                if (re.search(r'\b(need|should|must|will|have to|going to|plan|schedule|assign|complete|finish|submit|prepare|review)\b', 
+                             line, re.IGNORECASE) and
+                    not re.search(r'\b(don\'t|didn\'t|won\'t|wouldn\'t|shouldn\'t|can\'t|cannot)\b', line, re.IGNORECASE)):
+                    
+                    # Look for assignee
+                    assignee = "Unassigned"
+                    for name in state.get("participants", []):
+                        if name in line:
+                            assignee = name
+                            break
+                    
+                    action_items.append({
+                        "action": line,
+                        "assignee": assignee
+                    })
+    
+    return action_items
+
 def create_extract_actions_node(language=None):
     """Create the action extraction node with language-specific instructions"""
     language_instructions = ""
@@ -460,8 +722,36 @@ def create_extract_actions_node(language=None):
             chain = prompt | llm | JsonOutputParser()
             action_data = chain.invoke({})
             
+            # Type check - ensure action_data is a list
+            if not isinstance(action_data, list):
+                logger.warning(f"Action data is not a list: {action_data}, converting to list")
+                
+                # If we got an integer, string, or other non-list
+                if isinstance(action_data, (int, float, str)):
+                    # Create a basic action item with this value
+                    action_data = [{"action": str(action_data)}]
+                elif isinstance(action_data, dict):
+                    # If it's a dict, check if it has action_items field
+                    if "action_items" in action_data and isinstance(action_data["action_items"], list):
+                        action_data = action_data["action_items"]
+                    else:
+                        # Otherwise use it as a single action item
+                        action_data = [action_data]
+                else:
+                    # Fallback to empty list for other types
+                    action_data = []
+            
             action_items = []
             for item in action_data:
+                # Ensure item is a dict
+                if not isinstance(item, dict):
+                    if isinstance(item, str):
+                        # If it's a string, use it as the action
+                        item = {"action": item}
+                    else:
+                        # Skip other types
+                        continue
+                        
                 # Handle possible None values by ensuring all fields are strings
                 action = item.get("action", "")
                 assignee = item.get("assignee", "Unassigned")
@@ -496,20 +786,24 @@ def create_extract_actions_node(language=None):
                     parsed_result = robust_json_parse(raw_response)
                     if isinstance(parsed_result, list):
                         action_data = parsed_result
+                    elif isinstance(parsed_result, dict) and "action_items" in parsed_result:
+                        action_data = parsed_result["action_items"]
                     else:
-                        # If we get a dict instead of a list, look for an action_items field
-                        action_data = parsed_result.get("action_items", [])
+                        # Extract action items from the response
+                        action_data = []
+                        for key, value in parsed_result.items():
+                            if "action" in key.lower():
+                                action_data.append({"action": value})
+                        
+                        # If still no action items, use the fallback text parsing
+                        if not action_data:
+                            action_data = extract_actions_from_text(raw_response, state)
                     
                     logger.info("Successfully recovered action items")
                 except Exception:
                     # If we can't parse as JSON at all, try to extract action-like patterns
                     logger.warning("Attempting text-based action extraction")
-                    action_data = []
-                    lines = raw_response.split('\n')
-                    for line in lines:
-                        if (any(word in line.lower() for word in ["action", "task", "todo", "assign"]) 
-                            and len(line) > 10):
-                            action_data.append({"action": line.strip()})
+                    action_data = extract_actions_from_text(raw_response, state)
                 
                 action_items = []
                 for item in action_data:
