@@ -703,20 +703,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Add confidence information if available
                 let confidenceDisplay = '';
                 if (currentTranscript) {
-                    // Find confidence scores for this speaker
-                    const speakerSegments = currentTranscript.transcript.filter(s => `Speaker ${s.speaker}` === speaker);
-                    if (speakerSegments.length > 0) {
-                        // Calculate average confidence for this speaker
-                        const confidences = speakerSegments
-                            .filter(s => s.confidence !== undefined && s.confidence !== null)
-                            .map(s => s.confidence);
+                    // First try to use backend-calculated metrics if available
+                    if (currentTranscript.speaker_confidence_metrics && 
+                        currentTranscript.speaker_confidence_metrics[speaker.replace("Speaker ", "")]) {
                         
-                        if (confidences.length > 0) {
-                            const avgConfidence = confidences.reduce((a, b) => a + b, 0) / confidences.length;
-                            const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
-                                                   (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
+                        const speakerMetrics = currentTranscript.speaker_confidence_metrics[speaker.replace("Speaker ", "")];
+                        const avgConfidence = speakerMetrics.average_confidence;
+                        const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
+                                              (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
+                        
+                        confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+                    }
+                    // Fall back to calculation on the frontend if backend metrics aren't available
+                    else {
+                        // Find confidence scores for this speaker
+                        const speakerSegments = currentTranscript.transcript.filter(s => `Speaker ${s.speaker}` === speaker);
+                        if (speakerSegments.length > 0) {
+                            // Calculate average confidence for this speaker
+                            const confidences = speakerSegments
+                                .filter(s => s.confidence !== undefined && s.confidence !== null)
+                                .map(s => s.confidence);
                             
-                            confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+                            if (confidences.length > 0) {
+                                const avgConfidence = confidences.reduce((a, b) => a + b, 0) / confidences.length;
+                                const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
+                                                      (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
+                                
+                                confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+                            }
                         }
                     }
                 }

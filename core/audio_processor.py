@@ -630,6 +630,36 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         logger.info(f"Final language being returned: {metrics['language']}")
         logger.info(f"Overall confidence: {metrics.get('confidence_metrics', {}).get('average', 'N/A')}%")
         
+        # Calculate speaker-specific confidence metrics
+        speaker_confidences = {}
+        
+        # Group segments by speaker
+        for segment in conversation_data:
+            speaker = segment['speaker']
+            if speaker not in speaker_confidences:
+                speaker_confidences[speaker] = []
+                
+            if 'confidence' in segment:
+                speaker_confidences[speaker].append(segment['confidence'])
+        
+        # Calculate average confidence for each speaker
+        speaker_metrics = {}
+        for speaker, confidences in speaker_confidences.items():
+            if confidences:
+                avg_confidence = sum(confidences) / len(confidences)
+                speaker_metrics[speaker] = {
+                    "average_confidence": round(avg_confidence, 2),
+                    "min_confidence": round(min(confidences), 2) if confidences else None,
+                    "max_confidence": round(max(confidences), 2) if confidences else None,
+                    "confidence_level": "high" if avg_confidence >= 90 else 
+                                      ("medium" if avg_confidence >= 70 else "low"),
+                    "segment_count": len(confidences)
+                }
+        
+        # Add to metrics
+        if speaker_metrics:
+            metrics['speaker_confidence_metrics'] = speaker_metrics
+        
         return metrics
     
     except Exception as e:
