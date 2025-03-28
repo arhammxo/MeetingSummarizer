@@ -266,6 +266,12 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
             else:
                 logger.warning("No confidence metrics found in processing result")
             
+            # Add speaker confidence metrics logging
+            if "speaker_confidence_metrics" in result:
+                logger.info(f"Saving speaker confidence metrics: {result['speaker_confidence_metrics']}")
+            else:
+                logger.warning("No speaker confidence metrics found in processing result")
+            
             # Ensure all result fields are preserved
             save_job_result(job_id, result)
             update_job_status(job_id, JobStatus.COMPLETED, "Audio processing complete", progress=100)
@@ -372,7 +378,6 @@ async def summarize_background(
     language: Optional[str],
     is_long_recording: bool,
     additional_context: Optional[str] = None  # Add parameter
-
 ):
     """Generate meeting summary in the background and update job status"""
     try:
@@ -434,6 +439,12 @@ async def summarize_background(
         from services.utils import get_language_name
         language_name = get_language_name(language)
         
+        # Get speaker confidence metrics from the result if available
+        speaker_confidence_metrics = None
+        if isinstance(result, dict) and "speaker_confidence_metrics" in result:
+            speaker_confidence_metrics = result["speaker_confidence_metrics"]
+            logger.info("Found speaker confidence metrics in processing result")
+        
         # Combine results
         final_result = {
             "meeting_summary": result["meeting_summary"],
@@ -444,7 +455,8 @@ async def summarize_background(
                 "language_name": language_name,
                 "participant_count": len(participants),
                 "is_long_recording": is_long_recording,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "speaker_confidence_metrics": speaker_confidence_metrics  # Include in metadata
             }
         }
         

@@ -705,6 +705,53 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     /**
+     * Add detailed confidence metrics for a speaker
+     */
+    function addSpeakerConfidenceDetails(speaker, result) {
+        const speakerKey = speaker.replace("Speaker ", "");
+        let metrics = null;
+        
+        // Try to get metrics from result first
+        if (result.speaker_confidence_metrics && result.speaker_confidence_metrics[speakerKey]) {
+            metrics = result.speaker_confidence_metrics[speakerKey];
+        }
+        // Fall back to currentTranscript if available
+        else if (currentTranscript && currentTranscript.speaker_confidence_metrics && 
+                 currentTranscript.speaker_confidence_metrics[speakerKey]) {
+            metrics = currentTranscript.speaker_confidence_metrics[speakerKey];
+        }
+        
+        if (!metrics) return '';
+        
+        // Create a progress bar for visual representation
+        const progressBarClass = metrics.average_confidence >= 90 ? 'bg-success' : 
+                               (metrics.average_confidence >= 70 ? 'bg-warning' : 'bg-danger');
+        
+        return `
+            <div class="mt-3">
+                <h6>Confidence Metrics:</h6>
+                <div class="progress mb-2" style="height: 20px;">
+                    <div class="progress-bar ${progressBarClass}" role="progressbar" 
+                        style="width: ${metrics.average_confidence}%" 
+                        aria-valuenow="${metrics.average_confidence}" 
+                        aria-valuemin="0" aria-valuemax="100">
+                        ${metrics.average_confidence.toFixed(1)}%
+                    </div>
+                </div>
+                <div class="small text-muted">
+                    <p class="mb-1"><strong>Average:</strong> ${metrics.average_confidence.toFixed(1)}%</p>
+                    <p class="mb-1"><strong>Range:</strong> ${metrics.min_confidence.toFixed(1)}% - ${metrics.max_confidence.toFixed(1)}%</p>
+                    ${metrics.low_confidence_segments > 0 ? 
+                        `<p class="mb-1 text-warning">
+                            <strong>Low Confidence Segments:</strong> ${metrics.low_confidence_segments}
+                            (${((metrics.low_confidence_segments / metrics.total_segments) * 100).toFixed(1)}%)
+                        </p>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    /**
      * Display results in the UI
      */
     function displayResults(result) {
@@ -836,7 +883,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 let confidenceDisplay = '';
                 if (currentTranscript) {
                     // First try to use backend-calculated metrics if available
-                    if (currentTranscript.speaker_confidence_metrics && 
+                    // Check first in speaker_confidence_metrics directly from result (new location)
+                    if (result.speaker_confidence_metrics && 
+                        result.speaker_confidence_metrics[speaker.replace("Speaker ", "")]) {
+                        
+                        const speakerMetrics = result.speaker_confidence_metrics[speaker.replace("Speaker ", "")];
+                        const avgConfidence = speakerMetrics.average_confidence;
+                        const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
+                                              (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
+                        
+                        confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+                    }
+                    // Then try in currentTranscript.speaker_confidence_metrics (old location)
+                    else if (currentTranscript.speaker_confidence_metrics && 
                         currentTranscript.speaker_confidence_metrics[speaker.replace("Speaker ", "")]) {
                         
                         const speakerMetrics = currentTranscript.speaker_confidence_metrics[speaker.replace("Speaker ", "")];
@@ -901,6 +960,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                 ${contributionsList}
                                 ${actionsList}
                                 ${questionsList}
+                                
+                                <!-- Add detailed confidence metrics if available -->
+                                ${addSpeakerConfidenceDetails(speaker, result)}
                             </div>
                         </div>
                     </div>
@@ -908,6 +970,78 @@ document.addEventListener('DOMContentLoaded', () => {
                 speakerSummaries.innerHTML += speakerItem;
             });
         }
+    }
+
+    // New helper function to add detailed speaker confidence metrics
+    function addSpeakerConfidenceDetails(speaker, result) {
+        // Extract speaker ID (remove "Speaker " prefix if present)
+        const speakerId = speaker.replace("Speaker ", "");
+        
+        // Look for speaker confidence metrics in the result first
+        if (result.speaker_confidence_metrics && result.speaker_confidence_metrics[speakerId]) {
+            const metrics = result.speaker_confidence_metrics[speakerId];
+            
+            // Create confidence indicator class based on level
+            const confidenceClass = metrics.confidence_level === 'high' ? 'text-success' : 
+                                (metrics.confidence_level === 'medium' ? 'text-warning' : 'text-danger');
+            
+            return `
+                <div class="mt-3 small">
+                    <h6>Transcription Confidence:</h6>
+                    <div class="row">
+                        <div class="col-6">
+                            <span class="${confidenceClass}"><strong>${metrics.average_confidence}%</strong></span> average
+                        </div>
+                        <div class="col-6">
+                            <span>Range: ${metrics.min_confidence}% - ${metrics.max_confidence}%</span>
+                        </div>
+                    </div>
+                    <div class="progress mt-1 mb-2" style="height: 8px;">
+                        <div class="progress-bar ${metrics.confidence_level === 'high' ? 'bg-success' : 
+                                            (metrics.confidence_level === 'medium' ? 'bg-warning' : 'bg-danger')}" 
+                            role="progressbar" style="width: ${metrics.average_confidence}%" 
+                            aria-valuenow="${metrics.average_confidence}" aria-valuemin="0" aria-valuemax="100">
+                        </div>
+                    </div>
+                    <span class="small text-muted">Based on ${metrics.segment_count} segments</span>
+                </div>
+            `;
+        }
+        // Fallback to checking currentTranscript if available
+        else if (currentTranscript && currentTranscript.speaker_confidence_metrics && 
+                currentTranscript.speaker_confidence_metrics[speakerId]) {
+            
+            const metrics = currentTranscript.speaker_confidence_metrics[speakerId];
+            
+            // Create confidence indicator class based on level
+            const confidenceClass = metrics.confidence_level === 'high' ? 'text-success' : 
+                                (metrics.confidence_level === 'medium' ? 'text-warning' : 'text-danger');
+            
+            return `
+                <div class="mt-3 small">
+                    <h6>Transcription Confidence:</h6>
+                    <div class="row">
+                        <div class="col-6">
+                            <span class="${confidenceClass}"><strong>${metrics.average_confidence}%</strong></span> average
+                        </div>
+                        <div class="col-6">
+                            <span>Range: ${metrics.min_confidence}% - ${metrics.max_confidence}%</span>
+                        </div>
+                    </div>
+                    <div class="progress mt-1 mb-2" style="height: 8px;">
+                        <div class="progress-bar ${metrics.confidence_level === 'high' ? 'bg-success' : 
+                                            (metrics.confidence_level === 'medium' ? 'bg-warning' : 'bg-danger')}" 
+                            role="progressbar" style="width: ${metrics.average_confidence}%" 
+                            aria-valuenow="${metrics.average_confidence}" aria-valuemin="0" aria-valuemax="100">
+                        </div>
+                    </div>
+                    <span class="small text-muted">Based on ${metrics.segment_count} segments</span>
+                </div>
+            `;
+        }
+        
+        // Return empty string if no confidence metrics available
+        return '';
     }
     
     /**
