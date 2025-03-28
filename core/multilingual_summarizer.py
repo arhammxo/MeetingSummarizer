@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
 
-def summarize_meeting_multilingual(transcript, participants, language=None):
+def summarize_meeting_multilingual(transcript, participants, language=None, additional_context=None):
     """
     Creates meeting summaries in the specified language
     
@@ -11,13 +11,14 @@ def summarize_meeting_multilingual(transcript, participants, language=None):
         transcript (str): Meeting transcript
         participants (list): List of participant names
         language (str, optional): Language code (e.g., 'hi') or language name
+        additional_context (str, optional): Additional context about the meeting
         
     Returns:
         dict: Meeting summary and action items in the specified language
     """
     # If no specific language is provided, use the original function
     if not language or language.lower() == "en" or language.lower() == "english":
-        return original_summarize_meeting(transcript, participants)
+        return original_summarize_meeting(transcript, participants, additional_context=additional_context)
     
     # Get proper language name for instructions
     language_name = get_language_name(language)
@@ -42,11 +43,20 @@ def summarize_meeting_multilingual(transcript, participants, language=None):
     If the transcript contains English, translate all summary content to {language_name}.
     """
 
-    user_message = """Meeting Transcript: {transcript}
+    # Update user_message to include additional context if provided
+    context_section = ""
+    if additional_context:
+        context_section = f"""
+        Additional context about this meeting: {additional_context}
+        
+        """
 
-    Participants: {participants}
+    user_message = f"""Meeting Transcript: {{transcript}}
 
-    Please summarize this meeting COMPLETELY in {language_name}, ensuring all output is in {language_name} only."""
+    Participants: {{participants}}
+    
+    {context_section}
+    Please summarize this meeting COMPLETELY in {{language_name}}, ensuring all output is in {{language_name}} only."""
 
     summary_prompt = create_chat_prompt_template(system_message, user_message)
         

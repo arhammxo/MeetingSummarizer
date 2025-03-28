@@ -180,13 +180,21 @@ def create_analyze_node(language=None):
     Format your response as JSON. DO NOT include explanatory text before or after the JSON.
     {language_instructions}""")
     
-    user_template = "Here is the meeting transcript: {transcript}\n\nParticipants: {participants}"
+    user_template = """Here is the meeting transcript: {transcript}
+
+    Participants: {participants}
+    {additional_context_part}"""
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript to understand context and participants."""
         try:
             transcript = state["transcript"]
             participants = state["participants"]
+            
+            # Format additional context if provided
+            additional_context_part = ""
+            if state.get("additional_context"):
+                additional_context_part = f"\n\nAdditional context about this meeting: {state['additional_context']}"
             
             # For shorter transcripts, process directly
             if len(transcript) < 8000:
@@ -196,7 +204,8 @@ def create_analyze_node(language=None):
                         system_message,
                         HumanMessage(content=user_template.format(
                             transcript=transcript,
-                            participants=", ".join(participants)
+                            participants=", ".join(participants),
+                            additional_context_part=additional_context_part
                         ))
                     ])
                     
@@ -234,7 +243,8 @@ def create_analyze_node(language=None):
                         system_message,
                         HumanMessage(content=user_template.format(
                             transcript=chunk,
-                            participants=", ".join(participants)
+                            participants=", ".join(participants),
+                            additional_context_part=additional_context_part
                         ))
                     ])
                     
@@ -633,7 +643,7 @@ def create_meeting_summarizer_graph(language=None):
     return workflow.compile()
 
 # Main function to run the meeting summarizer
-def summarize_meeting(transcript: str, participants: List[str], language: str = None):
+def summarize_meeting(transcript: str, participants: List[str], language: str = None, additional_context: str = None):
     """Run the meeting summarizer on a transcript and return the summary and action items."""
     # Check for empty inputs
     if not transcript or not transcript.strip():
@@ -654,6 +664,7 @@ def summarize_meeting(transcript: str, participants: List[str], language: str = 
             "transcript": transcript,
             "participants": participants,
             "language": language,
+            "additional_context": additional_context,  # Add additional context
             "current_step": "initialization",
             "analysis": {},
             "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),

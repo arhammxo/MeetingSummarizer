@@ -73,6 +73,8 @@ class ProcessRequest(BaseModel):
     participants: List[str]
     language: Optional[str] = None
     is_long_recording: bool = False
+    additional_context: Optional[str] = None  # New field for meeting context
+
 
 class JobResponse(BaseModel):
     job_id: str
@@ -368,7 +370,9 @@ async def summarize_background(
     transcript: str, 
     participants: List[str], 
     language: Optional[str],
-    is_long_recording: bool
+    is_long_recording: bool,
+    additional_context: Optional[str] = None  # Add parameter
+
 ):
     """Generate meeting summary in the background and update job status"""
     try:
@@ -411,12 +415,15 @@ async def summarize_background(
             result = summarize_long_meeting(
                 transcript_data,
                 language=language,
+                additional_context=additional_context,  # Pass context
                 progress_callback=progress_callback
             )
         else:
             # Regular summarization, explicitly passing the language
             update_job_status(job_id, JobStatus.PROCESSING, "Generating meeting summary", progress=30)
-            result = summarize_meeting(transcript, participants, language=language)
+            result = summarize_meeting(transcript, participants, 
+                                  language=language,
+                                  additional_context=additional_context)
             update_job_status(job_id, JobStatus.PROCESSING, "Extracting action items", progress=60)
         
         # Generate speaker summaries, passing the same language parameter

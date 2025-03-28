@@ -5,6 +5,78 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentResult = null;
     let pollInterval = null;
 
+    // Add global context section function
+    window.addMeetingContextSection = function() {
+        console.log("ADDING MEETING CONTEXT SECTION - Starting...");
+        
+        // Remove any existing context section to avoid duplicates
+        const existingSection = document.getElementById('meetingContextSection');
+        if (existingSection) {
+            existingSection.remove();
+            console.log("Removed existing context section");
+        }
+        
+        // Create a very visible context input section
+        const contextSection = document.createElement('div');
+        contextSection.id = 'meetingContextSection';
+        contextSection.className = 'card mt-3 mb-3';
+        contextSection.style.border = '2px solid #007bff';  // Blue border to make it stand out
+        contextSection.style.boxShadow = '0 0 10px rgba(0,123,255,0.5)';  // Add glow effect
+        
+        contextSection.innerHTML = `
+            <div class="card-header bg-primary text-white">
+                <h4>Additional Meeting Context (Optional)</h4>
+                <p class="mb-0">Provide context to improve summary quality</p>
+            </div>
+            <div class="card-body">
+                <textarea id="meetingContext" class="form-control" rows="4" 
+                    placeholder="Example: This is a weekly team meeting for the marketing department. The main goals were to review Q2 campaign results and plan for Q3."></textarea>
+                <div class="form-text text-muted mt-2">
+                    Adding context helps our AI create a more accurate and relevant summary.
+                </div>
+            </div>
+        `;
+        
+        console.log("Context section created, now adding to page...");
+        
+        // Try multiple insertion methods to ensure it appears
+        
+        // Method 1: Insert before summarize button
+        const summarizeBtn = document.getElementById('summarizeAudioBtn');
+        if (summarizeBtn && summarizeBtn.parentNode) {
+            summarizeBtn.parentNode.insertBefore(contextSection, summarizeBtn);
+            console.log("SUCCESS: Added context before summarize button");
+            return true;
+        }
+        
+        // Method 2: Insert after transcript preview
+        const transcriptPreview = document.getElementById('transcriptPreview');
+        if (transcriptPreview) {
+            transcriptPreview.after(contextSection);
+            console.log("SUCCESS: Added context after transcript preview");
+            return true;
+        }
+        
+        // Method 3: Insert at end of audio form
+        const audioForm = document.getElementById('audioForm');
+        if (audioForm) {
+            audioForm.appendChild(contextSection);
+            console.log("SUCCESS: Added context at end of audio form");
+            return true;
+        }
+        
+        // Method 4: Last resort - add to main container
+        const container = document.querySelector('.container');
+        if (container) {
+            container.appendChild(contextSection);
+            console.log("SUCCESS: Added context to main container");
+            return true;
+        }
+        
+        console.error("FAILED: Could not find any suitable location to add context section");
+        return false;
+    };
+
     // Form submission handlers
     document.getElementById('audioForm').addEventListener('submit', handleAudioFormSubmit);
     document.getElementById('pasteTextForm').addEventListener('submit', handlePasteTextFormSubmit);
@@ -212,6 +284,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             : htmlContent;
                         
                         document.getElementById('transcriptPreview').classList.remove('d-none');
+                        
+                        // Add context section after showing transcript
+                        console.log("Transcript preview displayed, adding context section...");
+                        setTimeout(window.addMeetingContextSection, 100);
                     }
                 } else if (data.status === 'failed') {
                     clearInterval(pollInterval);
@@ -263,6 +339,52 @@ document.addEventListener('DOMContentLoaded', () => {
             progressBar.classList.remove('bg-danger');
             progressBar.classList.add('bg-primary');
         }
+
+        // Add context input after transcript is shown
+        if (progress === 100 && !isError) {
+            setTimeout(addContextInput, 500); // Short delay to ensure DOM is updated
+        }
+    }
+    
+    /**
+     * Add context input section to the UI
+     */
+    function addContextInput() {
+        // Check if we already added the context input
+        if (document.getElementById('meetingContextSection')) {
+            return;
+        }
+        
+        // Create the context input section
+        const contextSection = document.createElement('div');
+        contextSection.id = 'meetingContextSection';
+        contextSection.className = 'card mt-3 mb-3';
+        contextSection.innerHTML = `
+            <div class="card-header">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="enableContextInput">
+                    <label class="form-check-label" for="enableContextInput">
+                        <strong>Add Meeting Context</strong> (Optional)
+                    </label>
+                </div>
+            </div>
+            <div class="card-body" id="contextInputBody" style="display: none;">
+                <p class="text-muted">Provide additional context about this meeting to improve summary quality:</p>
+                <textarea id="meetingContext" class="form-control" rows="3" 
+                    placeholder="Example: This is a weekly team meeting for the marketing department. The main goals were to review Q2 campaign results and plan for Q3."></textarea>
+            </div>
+        `;
+        
+        // Insert before the summarize button
+        const audioProcessingStatus = document.getElementById('audioProcessingStatus');
+        audioProcessingStatus.parentNode.insertBefore(contextSection, 
+            document.getElementById('summarizeAudioBtn').parentNode);
+        
+        // Add toggle functionality
+        document.getElementById('enableContextInput').addEventListener('change', function() {
+            document.getElementById('contextInputBody').style.display = 
+                this.checked ? 'block' : 'none';
+        });
     }
     
     /**
@@ -286,12 +408,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 speakers.add(`Speaker ${segment.speaker}`);
             });
             
+            // Get additional context if provided
+            let additionalContext = null;
+            const contextInput = document.getElementById('meetingContext');
+            
+            if (contextInput) {
+                additionalContext = contextInput.value.trim();
+                console.log("Including additional context:", additionalContext);
+            }
+            
             // Prepare request data
             const requestData = {
                 transcript: currentTranscript.formatted_transcript.join('\n'),
                 participants: Array.from(speakers),
                 language: currentTranscript.language,
-                is_long_recording: document.getElementById('isLongRecording').checked
+                is_long_recording: document.getElementById('isLongRecording').checked,
+                additional_context: additionalContext  // Add the context to the request
             };
             
             // Submit the request

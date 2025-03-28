@@ -60,11 +60,6 @@ except ImportError as e:
             ]
         }
     
-    def summarize_meeting_multilingual(transcript, participants, language):
-        """Mock implementation of multilingual summarizer"""
-        logger.warning(f"Using mock implementation of multilingual summarizer for {language}!")
-        return lg_summarize_meeting(transcript, participants)
-    
     def get_language_name(language_code):
         """Simple language name getter"""
         language_map = {
@@ -278,7 +273,8 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
 def summarize_meeting(
     transcript: str, 
     participants: List[str], 
-    language: Optional[str] = None
+    language: Optional[str] = None,
+    additional_context: Optional[str] = None  # Add parameter
 ) -> Dict[str, Any]:
     """
     Run the meeting summarizer on a transcript and return the summary and action items.
@@ -313,13 +309,30 @@ def summarize_meeting(
         # Use multilingual summarizer if a language is specified (other than English)
         if HAS_MULTILINGUAL and language and language.lower() not in ["en", "english", "auto", "auto-detected"]:
             logger.info(f"Using multilingual summarizer for language: {language}")
-            result = summarize_meeting_multilingual(transcript, participants, language)
+            # Update this line - Pass only 3 arguments if the function only accepts 3
+            if additional_context:
+                # Check if the multilingual function has been updated to accept context
+                if hasattr(summarize_meeting_multilingual, "__code__") and summarize_meeting_multilingual.__code__.co_argcount >= 4:
+                    result = summarize_meeting_multilingual(transcript, participants, language, additional_context)
+                else:
+                    # Log that we're ignoring additional context due to function signature
+                    logger.warning(f"Additional context provided but summarize_meeting_multilingual can't accept it")
+                    result = summarize_meeting_multilingual(transcript, participants, language)
+            else:
+                # No context provided, call with 3 args
+                result = summarize_meeting_multilingual(transcript, participants, language)
         else:
             # Call the core summarization function with the detected language
-            # If language is "auto-detected", the language should already have been 
-            # replaced with the actual detected language code
             logger.info(f"Using standard summarizer with language: {language if language else 'default'}")
-            result = lg_summarize_meeting(transcript, participants, language)
+            # Similar pattern here - check if function can accept context
+            if additional_context:
+                if hasattr(lg_summarize_meeting, "__code__") and lg_summarize_meeting.__code__.co_argcount >= 4:
+                    result = lg_summarize_meeting(transcript, participants, language, additional_context)
+                else:
+                    logger.warning(f"Additional context provided but lg_summarize_meeting can't accept it")
+                    result = lg_summarize_meeting(transcript, participants, language)
+            else:
+                result = lg_summarize_meeting(transcript, participants, language)
         
         logger.info(f"Meeting summarized in {time.time() - start_time:.2f} seconds")
         
