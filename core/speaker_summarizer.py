@@ -1,5 +1,3 @@
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
 from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
 import logging
 
@@ -82,6 +80,7 @@ def generate_speaker_summaries(transcript, participants, language=None):
     # Create the chain with JSON output
     json_parser = create_output_parser()
     chain = prompt | llm | json_parser
+    
     # Generate summaries for each speaker
     speaker_summaries = {}
     
