@@ -56,6 +56,49 @@ def robust_json_parse(text):
             # If still failing, try to construct a structured response from the text
             logger.warning(f"Failed to parse JSON, creating fallback structure from text")
             
+            # Add pattern matching for common narrative intros
+            narrative_patterns = [
+                r'Summary of the Conversation\s*(.*?)(?=\n\n|\Z)',
+                r'Analysis\s*:\s*(.*?)(?=\n\n|\Z)',
+                r'Meeting Analysis\s*:\s*(.*?)(?=\n\n|\Z)'
+            ]
+
+            for pattern in narrative_patterns:
+                narrative_match = re.search(pattern, text, re.DOTALL)
+                if narrative_match:
+                    # Extract content and attempt to structure it
+                    narrative_content = narrative_match.group(1).strip()
+                    # Process narrative into structured data
+                    logger.info(f"Found narrative introduction with pattern: {pattern}")
+                    
+                    # Extract what seem to be key points or summary
+                    lines = narrative_content.split('\n')
+                    key_points = []
+                    decisions = []
+                    summary = ""
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if line and len(line) > 10:  # Only consider substantive lines
+                            # Try to identify what kind of content this is
+                            if "summary" in line.lower() or "overview" in line.lower():
+                                summary = line.split(":", 1)[1].strip() if ":" in line else line
+                            elif any(marker in line.lower() for marker in ["point", "discuss", "topic"]):
+                                key_points.append(line.split(":", 1)[1].strip() if ":" in line else line)
+                            elif any(marker in line.lower() for marker in ["decid", "decision", "conclude"]):
+                                decisions.append(line.split(":", 1)[1].strip() if ":" in line else line)
+                            elif not summary and len(line) < 100:
+                                # Use first substantial text as summary if nothing else found
+                                summary = line
+                    
+                    return {
+                        "summary": summary if summary else "Unable to extract summary from text",
+                        "key_points": key_points[:5] if key_points else ["Unable to extract key points"],
+                        "decisions": decisions if decisions else [],
+                        "action_items": []
+                    }
+            
+            # If no narrative patterns found, fall back to the original approach
             # Extract what seem to be key points or summary
             lines = text.split('\n')
             key_points = []
@@ -170,14 +213,36 @@ def create_analyze_node(language=None):
     
     # 1. Analyze the transcript - using a completely different template approach
     system_message = SystemMessage(content=f"""You are an expert meeting analyst. Analyze the provided meeting transcript 
-    and identify the following elements:
-    - Meeting purpose: Provide a brief statement of what the meeting was about
-    - Main topics: List the key topics that were discussed (as a JSON array)
-    - Emotional tone: Describe the overall emotional tone of the meeting
-    - Participation level: Describe how evenly participants contributed
-    - Disagreement areas: List any areas where participants disagreed (as a JSON array)
+    and identify the following elements.
 
-    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
+    IMPORTANT: Your response MUST be VALID JSON with NO additional text before or after. 
+    You are analyzing a CHUNK of a longer transcript - maintain strict JSON format regardless of partial context.
+
+    Your response MUST follow this exact JSON structure:
+    {{
+    "meeting_purpose": "brief description of meeting purpose",
+    "main_topics": ["topic1", "topic2", "topic3"],
+    "emotional_tone": "description of emotional tone",
+    "participation_level": "description of participation balance",
+    "disagreement_areas": ["area1", "area2"]
+    }}
+
+    DO NOT:
+    - Start with phrases like "Summary of the Conversation"
+    - Include any markdown formatting
+    - Write in narrative form
+    - Add explanations outside the JSON structure
+    - Use single quotes for JSON keys or values
+
+    Example valid response:
+    {{
+    "meeting_purpose": "Weekly product development status update",
+    "main_topics": ["UI redesign progress", "Backend API performance", "Customer feedback"],
+    "emotional_tone": "Professional with moments of constructive tension",
+    "participation_level": "Dominated by team leads with minimal input from junior members",
+    "disagreement_areas": ["Resource allocation", "Timeline feasibility"]
+    }}
+
     {language_instructions}""")
     
     user_template = """Here is the meeting transcript: {transcript}
@@ -238,6 +303,12 @@ def create_analyze_node(language=None):
             for i, chunk in enumerate(chunks):
                 logging.info(f"Analyzing chunk {i+1}/{len(chunks)}")
                 try:
+                    # Add context information for chunk processing
+                    if i > 0:  # Not the first chunk
+                        chunk_context = f"\nNote: This is chunk {i+1} of {len(chunks)} from a longer transcript. Please maintain JSON format despite the partial context."
+                    else:
+                        chunk_context = ""
+                    
                     # Create a one-time template for each chunk
                     chunk_prompt = ChatPromptTemplate.from_messages([
                         system_message,
@@ -245,7 +316,7 @@ def create_analyze_node(language=None):
                             transcript=chunk,
                             participants=", ".join(participants),
                             additional_context_part=additional_context_part
-                        ))
+                        ) + chunk_context)
                     ])
                     
                     llm = get_llm()

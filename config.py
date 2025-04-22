@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings configured via environment variables"""
     
     # LLM Configuration
-    LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
+    LLM_PROVIDER: str = "openai"  # Options: "openai", "ollama"
     
     # OpenAI Configuration (legacy, can be removed if fully migrating)
     OPENAI_API_KEY: Optional[str] = None

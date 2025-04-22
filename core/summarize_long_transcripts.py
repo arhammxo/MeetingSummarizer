@@ -50,6 +50,26 @@ def robust_json_parse(text):
         try:
             return json.loads(cleaned_text)
         except json.JSONDecodeError:
+            # Try to extract structured data from narrative text
+            logger.warning(f"Attempting to extract structured data from narrative text")
+            
+            # Pattern matching for common narrative intros
+            narrative_patterns = [
+                r'Summary of the Conversation\s*(.*?)(?=\n\n|\Z)',
+                r'Analysis\s*:\s*(.*?)(?=\n\n|\Z)',
+                r'Meeting Analysis\s*:\s*(.*?)(?=\n\n|\Z)',
+                r'Summary\s*:\s*(.*?)(?=\n\n|\Z)',
+                r'Overview\s*:\s*(.*?)(?=\n\n|\Z)'
+            ]
+            
+            summary = ""
+            for pattern in narrative_patterns:
+                narrative_match = re.search(pattern, text, re.DOTALL)
+                if narrative_match:
+                    # Extract content and use as summary
+                    summary = narrative_match.group(1).strip()
+                    break
+            
             # If still failing, try to construct a structured response from the text
             logger.warning(f"Failed to parse JSON, creating fallback structure from text")
             
@@ -57,7 +77,6 @@ def robust_json_parse(text):
             lines = text.split('\n')
             key_points = []
             decisions = []
-            summary = ""
             action_items = []
             
             for line in lines:
