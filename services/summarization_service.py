@@ -129,7 +129,8 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
         
         # Use the LLM service factory instead of directly creating a ChatOpenAI instance
         # This respects the configured LLM provider (Ollama or OpenAI)
-        from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
+        from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser, get_ollama_llm
+        from config import settings
         
         # Initialize the LLM with increased temperature for better multilingual generation
         llm = get_llm(temperature=0.2, purpose="multilingual")
@@ -169,9 +170,6 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
         # Create the output parser
         json_parser = create_output_parser()
         
-        # Create the chain with JSON output
-        chain = prompt | llm | json_parser
-        
         # Group transcript segments by speaker
         speaker_contributions = {}
         
@@ -200,11 +198,47 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
               retry=retry_if_exception_type((ConnectionError, TimeoutError)))
         def generate_summary_with_retry(speaker, contributions, language_name):
             try:
-                return chain.invoke({
-                    "speaker": speaker,
-                    "contributions": contributions,
-                    "language_name": language_name
-                })
+                # For Ollama with structured output support
+                if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                    schema = {
+                        "type": "object",
+                        "properties": {
+                            "key_contributions": {"type": "array", "items": {"type": "string"}},
+                            "action_items": {"type": "array", "items": {"type": "string"}},
+                            "questions_raised": {"type": "array", "items": {"type": "string"}},
+                            "brief_summary": {"type": "string"}
+                        },
+                        "required": ["key_contributions", "action_items", "questions_raised", "brief_summary"]
+                    }
+                    
+                    # Get a fresh LLM instance with format schema
+                    structured_llm = get_ollama_llm(
+                        temperature=0.2,
+                        purpose="multilingual",
+                        format_schema=schema
+                    )
+                    
+                    # Create chain without JSON parser for structured output
+                    structured_chain = prompt | structured_llm
+                    result = structured_chain.invoke({
+                        "speaker": speaker,
+                        "contributions": contributions,
+                        "language_name": language_name
+                    })
+                    
+                    # Parse the structured response
+                    if hasattr(result, 'content'):
+                        return json.loads(result.content)
+                    else:
+                        return json.loads(str(result))
+                else:
+                    # Regular chain with JSON parser
+                    chain = prompt | llm | json_parser
+                    return chain.invoke({
+                        "speaker": speaker,
+                        "contributions": contributions,
+                        "language_name": language_name
+                    })
             except Exception as e:
                 logger.error(f"Error in API call for {speaker}: {str(e)}")
                 raise

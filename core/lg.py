@@ -257,20 +257,31 @@ Participants: {participants}"""
                     ))
                 ])
                 
-                llm = get_llm()
-                
+                # Try structured output first for Ollama
                 if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
-                    structured_llm = get_ollama_llm(
-                        temperature=0.1,
-                        purpose="summarization",
-                        format_schema=analysis_schema
-                    )
-                    result = prompt | structured_llm
-                    response = result.invoke({})
-                    analysis = json.loads(response.content)
-                else:
-                    chain = prompt | llm | JsonOutputParser()
-                    analysis = chain.invoke({})
+                    try:
+                        structured_llm = get_ollama_llm(
+                            temperature=0.1,
+                            purpose="summarization",
+                            format_schema=analysis_schema
+                        )
+                        result = prompt | structured_llm
+                        response = result.invoke({})
+                        
+                        # Parse response
+                        if hasattr(response, 'content'):
+                            analysis = json.loads(response.content)
+                        else:
+                            analysis = json.loads(str(response))
+                            
+                        return {**state, "analysis": analysis, "current_step": "summarize"}
+                    except Exception as e:
+                        logger.warning(f"Structured output failed: {e}, falling back to JSON parser")
+                
+                # Fallback to regular JSON parser
+                llm = get_llm()
+                chain = prompt | llm | JsonOutputParser()
+                analysis = chain.invoke({})
                 
                 return {**state, "analysis": analysis, "current_step": "summarize"}
             
@@ -291,20 +302,34 @@ Participants: {participants}"""
                 ])
                 
                 try:
+                    # Try structured output first for Ollama
                     if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
-                        structured_llm = get_ollama_llm(
-                            temperature=0.1,
-                            purpose="summarization",
-                            format_schema=analysis_schema
-                        )
-                        result = chunk_prompt | structured_llm
-                        response = result.invoke({})
-                        chunk_analysis = json.loads(response.content)
-                    else:
-                        chain = chunk_prompt | llm | JsonOutputParser()
-                        chunk_analysis = chain.invoke({})
+                        try:
+                            structured_llm = get_ollama_llm(
+                                temperature=0.1,
+                                purpose="summarization",
+                                format_schema=analysis_schema
+                            )
+                            result = chunk_prompt | structured_llm
+                            response = result.invoke({})
+                            
+                            # Parse response
+                            if hasattr(response, 'content'):
+                                chunk_analysis = json.loads(response.content)
+                            else:
+                                chunk_analysis = json.loads(str(response))
+                                
+                            chunk_analyses.append(chunk_analysis)
+                            continue
+                        except Exception as e:
+                            logger.warning(f"Structured output failed for chunk {i+1}: {e}, falling back to JSON parser")
                     
+                    # Fallback to regular JSON parser
+                    llm = get_llm()
+                    chain = chunk_prompt | llm | JsonOutputParser()
+                    chunk_analysis = chain.invoke({})
                     chunk_analyses.append(chunk_analysis)
+                    
                 except Exception as e:
                     logger.warning(f"Chunk {i+1} failed: {e}")
                     chunk_analyses.append({

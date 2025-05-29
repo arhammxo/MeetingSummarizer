@@ -1,5 +1,7 @@
-from services.llm_service import get_llm, get_ollama_llm, create_chat_prompt_template, create_output_parser
+from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser, get_ollama_llm
 import logging
+import json
+from config import settings
 
 def generate_speaker_summaries(transcript, participants, language=None):
     """
@@ -36,70 +38,74 @@ def generate_speaker_summaries(transcript, participants, language=None):
         if speaker_lines:
             speaker_contributions[participant] = '\n'.join(speaker_lines)
     
-    # Language-specific instructions
-    language_instructions = ""
-    if language:
-        if language == "hi":
-            language_instructions = "Generate your response in Hindi language using Hindi script (Devanagari)."
-        elif language == "en":
-            language_instructions = "Generate your response in English."
-        else:
-            # For other languages, specify to respond in that language
-            language_instructions = f"Generate your response in the {language} language."
+    # Create prompt without XML tags that confuse smaller models
+    system_message = """You are a meeting analyst. Create a JSON summary for each speaker with these fields:
+- key_contributions: List of 2-4 main points
+- action_items: List of tasks they agreed to
+- questions_raised: List of questions they asked
+- brief_summary: 1-2 sentence summary
+
+Return ONLY valid JSON, no other text."""
     
-    # Simplified prompt
-    system_message = """Create a JSON summary for this speaker:
-{
-  "key_contributions": ["contribution1", "contribution2"],
-  "action_items": ["action1", "action2"],
-  "questions_raised": ["question1"],
-  "brief_summary": "1-2 sentence summary"
-}
-
-Be concise and factual. {language_instructions}"""
-
     user_message = """Speaker: {speaker}
 Contributions: {contributions}"""
-
-    # Define schema
-    speaker_schema = {
-        "type": "object",
-        "properties": {
-            "key_contributions": {"type": "array", "items": {"type": "string"}},
-            "action_items": {"type": "array", "items": {"type": "string"}},
-            "questions_raised": {"type": "array", "items": {"type": "string"}},
-            "brief_summary": {"type": "string"}
-        },
-        "required": ["key_contributions", "action_items", "questions_raised", "brief_summary"]
-    }
-
+    
     prompt = create_chat_prompt_template(system_message, user_message)
     
-    # Create the chain with JSON output
-    json_parser = create_output_parser(schema=speaker_schema)
+    # Create the chain - no schema parameter!
+    json_parser = create_output_parser()  # Fixed: No schema parameter
     chain = prompt | llm | json_parser
     
     # Generate summaries for each speaker
     speaker_summaries = {}
     
     for speaker, contributions in speaker_contributions.items():
-        if contributions.strip():  # Only process if they have actual contributions
+        if contributions.strip():
             if len(contributions) > 8000:
-                # Handle large contributions by truncation or chunking
-                logging.warning(f"Contributions for {speaker} exceed 8000 chars ({len(contributions)}), truncating")
-                speaker_contributions[speaker] = contributions[:7500] + "...\n[Content truncated due to length]"
+                logging.warning(f"Contributions for {speaker} exceed 8000 chars, truncating")
+                contributions = contributions[:7500] + "...\n[Content truncated]"
+            
             try:
-                summary = chain.invoke({
-                    "speaker": speaker,
-                    "contributions": contributions,
-                    "language_instructions": language_instructions
-                })
+                # For Ollama with structured output support
+                if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                    schema = {
+                        "type": "object",
+                        "properties": {
+                            "key_contributions": {"type": "array", "items": {"type": "string"}},
+                            "action_items": {"type": "array", "items": {"type": "string"}},
+                            "questions_raised": {"type": "array", "items": {"type": "string"}},
+                            "brief_summary": {"type": "string"}
+                        },
+                        "required": ["key_contributions", "action_items", "questions_raised", "brief_summary"]
+                    }
+                    
+                    # Get a fresh LLM instance with format schema
+                    structured_llm = get_ollama_llm(
+                        temperature=0.1,
+                        purpose="summarization",
+                        format_schema=schema
+                    )
+                    
+                    # Create chain without JSON parser for structured output
+                    structured_chain = prompt | structured_llm
+                    result = structured_chain.invoke({
+                        "speaker": speaker,
+                        "contributions": contributions
+                    })
+                    
+                    # Parse the structured response
+                    if hasattr(result, 'content'):
+                        summary = json.loads(result.content)
+                    else:
+                        summary = json.loads(str(result))
+                else:
+                    # Regular chain with JSON parser
+                    summary = chain.invoke({
+                        "speaker": speaker,
+                        "contributions": contributions
+                    })
                 
-                # Validate that the response is properly formatted
-                if not isinstance(summary, dict):
-                    raise ValueError("Response is not a dictionary")
-                
-                # Ensure all required fields are present
+                # Validate required fields
                 required_fields = ["key_contributions", "action_items", "questions_raised", "brief_summary"]
                 for field in required_fields:
                     if field not in summary:
@@ -110,26 +116,19 @@ Contributions: {contributions}"""
             except Exception as e:
                 logging.error(f"Error generating summary for {speaker}: {str(e)}")
                 
-                # Attempt to generate a simpler summary with fewer requirements
+                # Simpler fallback
                 try:
-                    # Create a simpler prompt for fallback
-                    simple_system = f"Summarize what {speaker} contributed to the meeting in 1-2 sentences."
-                    simple_user = f"Speaker contributions:\n{contributions}"
-                    simple_prompt = create_chat_prompt_template(simple_system, simple_user)
+                    simple_prompt = f"Summarize {speaker}'s contributions in 2 sentences: {contributions[:1000]}"
+                    simple_chain = llm
+                    simple_result = simple_chain.invoke(simple_prompt)
                     
-                    # Get a simple text response without JSON parsing
-                    simple_result = simple_prompt | llm
-                    simple_summary = simple_result.invoke({})
-                    
-                    # Format into expected structure
                     speaker_summaries[speaker] = {
                         "key_contributions": ["See brief summary"],
                         "action_items": [],
                         "questions_raised": [],
-                        "brief_summary": simple_summary if isinstance(simple_summary, str) else str(simple_summary)
+                        "brief_summary": str(simple_result.content if hasattr(simple_result, 'content') else simple_result)
                     }
-                except Exception as fallback_error:
-                    # Ultimate fallback
+                except:
                     speaker_summaries[speaker] = {
                         "key_contributions": ["Error processing contributions"],
                         "action_items": [],

@@ -42,33 +42,53 @@ def get_openai_llm(temperature: float = 0, model_name: Optional[str] = None):
         raise
 
 def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general", format_schema: Optional[Dict] = None):
-    """Get an Ollama LLM instance with structured output support"""
+    """Get an Ollama LLM instance"""
     try:
-        from langchain_ollama import ChatOllama
-        
-        # Select the appropriate model based on purpose
-        if not model_name:
-            if purpose == "summarization":
-                model_name = settings.OLLAMA_SUMMARIZATION_MODEL
-            elif purpose == "multilingual":
-                model_name = settings.OLLAMA_MULTILINGUAL_MODEL
-            else:
-                model_name = settings.OLLAMA_MODEL
-        
-        logger.info(f"Creating Ollama LLM with model: {model_name}, purpose: {purpose}")
-        
-        # Use ChatOllama for better structured output support
-        llm = ChatOllama(
-            base_url=settings.OLLAMA_API_BASE,
-            model=model_name,
-            temperature=temperature,
-            format=format_schema,  # Add structured output support
-            timeout=120.0,
-            num_predict=4096,  # Increase token limit
-        )
-        
-        return llm
-        
+        # Try new import first
+        try:
+            from langchain_ollama import ChatOllama
+            
+            if not model_name:
+                if purpose == "summarization":
+                    model_name = settings.OLLAMA_SUMMARIZATION_MODEL
+                elif purpose == "multilingual":
+                    model_name = settings.OLLAMA_MULTILINGUAL_MODEL
+                else:
+                    model_name = settings.OLLAMA_MODEL
+            
+            logger.info(f"Creating ChatOllama with model: {model_name}, purpose: {purpose}")
+            
+            # Use format parameter for structured output
+            return ChatOllama(
+                base_url=settings.OLLAMA_API_BASE,
+                model=model_name,
+                temperature=temperature,
+                format=format_schema,  # This is the correct parameter
+                timeout=120.0
+            )
+            
+        except ImportError:
+            # Fall back to old import
+            from langchain_ollama.llms import OllamaLLM
+            
+            if not model_name:
+                if purpose == "summarization":
+                    model_name = settings.OLLAMA_SUMMARIZATION_MODEL
+                elif purpose == "multilingual":
+                    model_name = settings.OLLAMA_MULTILINGUAL_MODEL
+                else:
+                    model_name = settings.OLLAMA_MODEL
+            
+            logger.info(f"Creating OllamaLLM with model: {model_name}, purpose: {purpose}")
+            
+            # OllamaLLM doesn't support format parameter
+            return OllamaLLM(
+                base_url=settings.OLLAMA_API_BASE,
+                model=model_name,
+                temperature=temperature,
+                timeout=120.0
+            )
+            
     except ImportError:
         logger.error("langchain_ollama not installed. Run: pip install langchain-ollama")
         raise

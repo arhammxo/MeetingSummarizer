@@ -5,6 +5,7 @@ from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 import re
 import logging
 import json
+from config import settings  # Add settings import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -178,9 +179,6 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         "required": ["summary", "key_points", "decisions", "action_items"]
     }
     
-    # Get appropriate LLM based on configuration
-    llm = get_llm(temperature=0, purpose="summarization")
-    
     # Language-specific instructions
     language_instructions = ""
     if language:
@@ -212,10 +210,6 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
 {language_instructions}"""
     
     # Create messages
-    from langchain_core.messages import SystemMessage, HumanMessage
-    from langchain_core.prompts import ChatPromptTemplate
-    from langchain_core.output_parsers import JsonOutputParser
-    
     system_message = SystemMessage(content=system_content)
     human_message = HumanMessage(content=chunk_text)
     
@@ -223,20 +217,30 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
     prompt = ChatPromptTemplate.from_messages([system_message, human_message])
     
     try:
-        # Try with structured output if using Ollama
-        if hasattr(llm, "format") and llm.format is None:
+        # For Ollama with structured output
+        if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
             llm = get_ollama_llm(
-                temperature=0,
+                temperature=0.1,
                 purpose="summarization",
                 format_schema=chunk_schema
             )
-            result = prompt | llm
-            response = result.invoke({})
-            return json.loads(response.content)
+            
+            chain = prompt | llm  # No JSON parser needed
+            response = chain.invoke({})
+            
+            # Parse response
+            if hasattr(response, 'content'):
+                result = json.loads(response.content)
+            else:
+                result = json.loads(str(response))
+                
+            return result
         else:
-            # Fallback to standard JSON parsing
-            chain = prompt | llm | JsonOutputParser()
-            return chain.invoke({})
+            # Regular approach with JSON parser
+            llm = ChatOpenAI(model="gpt-4", temperature=0)
+            chain = prompt | llm | JsonOutputParser()  # No schema parameter!
+            result = chain.invoke({})
+            return result
             
     except Exception as e:
         logger.warning(f"Error in structured output: {e}. Attempting recovery...")
