@@ -41,10 +41,10 @@ def get_openai_llm(temperature: float = 0, model_name: Optional[str] = None):
         logger.error("langchain_openai not installed. Run: pip install langchain-openai")
         raise
 
-def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general"):
-    """Get an Ollama LLM instance"""
+def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general", format_schema: Optional[Dict] = None):
+    """Get an Ollama LLM instance with structured output support"""
     try:
-        from langchain_ollama.llms import OllamaLLM
+        from langchain_ollama import ChatOllama
         
         # Select the appropriate model based on purpose
         if not model_name:
@@ -57,45 +57,39 @@ def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, pur
         
         logger.info(f"Creating Ollama LLM with model: {model_name}, purpose: {purpose}")
         
-        return OllamaLLM(
+        # Use ChatOllama for better structured output support
+        llm = ChatOllama(
             base_url=settings.OLLAMA_API_BASE,
             model=model_name,
             temperature=temperature,
-            # Add custom stop tokens to mimic OpenAI behavior
-            stop=["<human>", "<assistant>"],
-            # Correct parameter name for timeout
-            timeout=120.0
+            format=format_schema,  # Add structured output support
+            timeout=120.0,
+            num_predict=4096,  # Increase token limit
         )
+        
+        return llm
+        
     except ImportError:
         logger.error("langchain_ollama not installed. Run: pip install langchain-ollama")
         raise
 
-def create_chat_prompt_template(system_prompt, user_prompt):
-    """
-    Create a chat prompt template that works with both OpenAI and Ollama
-    
-    Args:
-        system_prompt: System prompt text
-        user_prompt: User prompt text
-        
-    Returns:
-        A prompt template instance
-    """
+def create_chat_prompt_template(system_prompt, user_prompt, use_simple_format=False):
+    """Create a chat prompt template with Ollama optimization"""
     try:
         from langchain_core.prompts import ChatPromptTemplate
         
-        if settings.LLM_PROVIDER == "openai":
-            # OpenAI supports system messages
+        if settings.LLM_PROVIDER == "ollama" and use_simple_format:
+            # Simplified format for Ollama
+            combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+            return ChatPromptTemplate.from_template(combined_prompt)
+        else:
+            # Standard format
             return ChatPromptTemplate.from_messages([
                 ("system", system_prompt),
                 ("human", user_prompt)
             ])
-        else:
-            # For Ollama, combine system and user prompts
-            combined_prompt = f"<system>\n{system_prompt}\n</system>\n\n<human>\n{user_prompt}\n</human>\n\n<assistant>"
-            return ChatPromptTemplate.from_template(combined_prompt)
     except ImportError:
-        logger.error("langchain_core not installed. Run: pip install langchain-core")
+        logger.error("langchain_core not installed")
         raise
 
 def create_output_parser():

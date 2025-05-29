@@ -154,7 +154,7 @@ def format_transcript_chunk(chunk):
 
 def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
     """
-    Summarize a single transcript chunk
+    Summarize a single transcript chunk with structured output
     
     Args:
         chunk_text: Text of the transcript chunk
@@ -162,9 +162,24 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         is_final: Whether this is the final summary (affects prompt)
         
     Returns:
-        Summary object
+        Summary object with structured output
     """
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    from services.llm_service import get_llm, get_ollama_llm
+    
+    # Define schema
+    chunk_schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "key_points": {"type": "array", "items": {"type": "string"}},
+            "decisions": {"type": "array", "items": {"type": "string"}},
+            "action_items": {"type": "array", "items": {"type": "object"}}
+        },
+        "required": ["summary", "key_points", "decisions", "action_items"]
+    }
+    
+    # Get appropriate LLM based on configuration
+    llm = get_llm(temperature=0, purpose="summarization")
     
     # Language-specific instructions
     language_instructions = ""
@@ -174,68 +189,69 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         elif language != "en":
             language_instructions = f"Generate your response in the {language} language."
     
-    # Determine the appropriate content based on whether this is a chunk or final summary
+    # Simplified prompt
     if not is_final:
-        # Prompt for individual chunk summary
-        system_content = f"""You are an expert meeting analyst. Summarize this chunk of a meeting transcript.
-        Focus on:
-        1. Key points discussed
-        2. Decisions made
-        3. Action items mentioned
-        
-        Format your response as JSON with these fields:
-        - summary: A paragraph summarizing this part of the meeting
-        - key_points: List of important points (2-4 items)
-        - decisions: List of any decisions made
-        - action_items: List of action items mentioned, each with "action" and "assignee" if available
-        
-        Keep your summary concise but include all important information.
-        {language_instructions}
-        """
-        
-        human_content = f"Here is a chunk of the meeting transcript:\n\n{chunk_text}"
+        system_content = f"""Summarize this meeting chunk as JSON:
+{{
+  "summary": "paragraph summary",
+  "key_points": ["point1", "point2"],
+  "decisions": ["decision1"],
+  "action_items": [{{"action": "task", "assignee": "person"}}]
+}}
+
+{language_instructions}"""
     else:
-        # Prompt for final summary (combining chunk summaries)
-        system_content = f"""You are an expert meeting analyst. Create a final summary of a meeting based on these sectional summaries.
-        Combine and synthesize the information to provide a coherent overall summary.
-        
-        Format your response as JSON with these fields:
-        - summary: A paragraph summarizing the entire meeting
-        - key_points: List of the most important points (3-5 items)
-        - decisions: List of all decisions made
-        - action_items: List of all action items, each with "action", "assignee", and "due_date" if available
-        
-        Eliminate redundancies and provide a clear, structured overview.
-        {language_instructions}
-        """
-        
-        human_content = f"Here are the sectional summaries of the meeting:\n\n{chunk_text}"
+        system_content = f"""Combine these summaries into final JSON:
+{{
+  "summary": "overall meeting summary",
+  "key_points": ["top 3-5 points"],
+  "decisions": ["all decisions"],
+  "action_items": [{{"action": "task", "assignee": "person", "due_date": "date"}}]
+}}
+
+{language_instructions}"""
     
-    # Create messages directly
+    # Create messages
+    from langchain_core.messages import SystemMessage, HumanMessage
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import JsonOutputParser
+    
     system_message = SystemMessage(content=system_content)
-    human_message = HumanMessage(content=human_content)
+    human_message = HumanMessage(content=chunk_text)
     
-    # Process the text
+    # Create prompt template
+    prompt = ChatPromptTemplate.from_messages([system_message, human_message])
+    
     try:
-        # First try with JSON output parser
-        prompt = ChatPromptTemplate.from_messages([system_message, human_message])
-        chain = prompt | llm | JsonOutputParser()
-        result = chain.invoke({})
-        return result
-    except Exception as json_error:
-        logger.warning(f"JSON parsing error: {json_error}. Attempting recovery...")
+        # Try with structured output if using Ollama
+        if hasattr(llm, "format") and llm.format is None:
+            llm = get_ollama_llm(
+                temperature=0,
+                purpose="summarization",
+                format_schema=chunk_schema
+            )
+            result = prompt | llm
+            response = result.invoke({})
+            return json.loads(response.content)
+        else:
+            # Fallback to standard JSON parsing
+            chain = prompt | llm | JsonOutputParser()
+            return chain.invoke({})
+            
+    except Exception as e:
+        logger.warning(f"Error in structured output: {e}. Attempting recovery...")
         
         try:
             # Fallback to string output and manual parsing
+            from langchain_core.output_parsers import StrOutputParser
             str_chain = prompt | llm | StrOutputParser()
-            
-            # Get raw text response
             raw_response = str_chain.invoke({})
             
             # Use robust parsing
             parsed_result = robust_json_parse(raw_response)
             logger.info("Successfully recovered JSON structure")
             return parsed_result
+            
         except Exception as e:
             logger.error(f"Error summarizing chunk, even with recovery: {e}")
             # Return a basic structure in case of error

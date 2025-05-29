@@ -1,4 +1,4 @@
-from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
+from services.llm_service import get_llm, get_ollama_llm, create_chat_prompt_template, create_output_parser
 import logging
 
 def generate_speaker_summaries(transcript, participants, language=None):
@@ -47,38 +47,36 @@ def generate_speaker_summaries(transcript, participants, language=None):
             # For other languages, specify to respond in that language
             language_instructions = f"Generate your response in the {language} language."
     
-    # Create a prompt template for generating speaker summaries
-    system_message = """You are an expert meeting analyst. Your task is to create a concise 
-    summary of what a specific participant contributed to a meeting. Focus on:
+    # Simplified prompt
+    system_message = """Create a JSON summary for this speaker:
+{
+  "key_contributions": ["contribution1", "contribution2"],
+  "action_items": ["action1", "action2"],
+  "questions_raised": ["question1"],
+  "brief_summary": "1-2 sentence summary"
+}
 
-    1. Main points they raised
-    2. Questions they asked
-    3. Action items they took on or assigned
-    4. Key decisions they influenced
-    5. Their primary concerns or interests
-
-    Format your response as a JSON object with these keys:
-    - "key_contributions": List of 2-4 main points they contributed
-    - "action_items": List of any tasks they agreed to do or assigned
-    - "questions_raised": List of important questions they asked, if any
-    - "brief_summary": A 1-2 sentence summary of their overall participation
-
-    Keep your response focused only on this speaker's contributions.
-
-    {language_instructions}
-    """
+Be concise and factual. {language_instructions}"""
 
     user_message = """Speaker: {speaker}
+Contributions: {contributions}"""
 
-    Their contributions:
-    {contributions}
-
-    Please summarize this speaker's participation in the meeting."""
+    # Define schema
+    speaker_schema = {
+        "type": "object",
+        "properties": {
+            "key_contributions": {"type": "array", "items": {"type": "string"}},
+            "action_items": {"type": "array", "items": {"type": "string"}},
+            "questions_raised": {"type": "array", "items": {"type": "string"}},
+            "brief_summary": {"type": "string"}
+        },
+        "required": ["key_contributions", "action_items", "questions_raised", "brief_summary"]
+    }
 
     prompt = create_chat_prompt_template(system_message, user_message)
     
     # Create the chain with JSON output
-    json_parser = create_output_parser()
+    json_parser = create_output_parser(schema=speaker_schema)
     chain = prompt | llm | json_parser
     
     # Generate summaries for each speaker

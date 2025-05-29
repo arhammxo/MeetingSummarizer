@@ -11,16 +11,22 @@ class Settings(BaseSettings):
     """Application settings configured via environment variables"""
     
     # LLM Configuration
-    LLM_PROVIDER: str = "openai"  # Options: "openai", "ollama"
+    LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
     
     # OpenAI Configuration (legacy, can be removed if fully migrating)
     OPENAI_API_KEY: Optional[str] = None
     
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.3:70b"  # Default model
-    OLLAMA_SUMMARIZATION_MODEL: str = "llama3.3:70b"  # For summarization
-    OLLAMA_MULTILINGUAL_MODEL: str = "llama3.3:70b"  # For multilingual support
+    OLLAMA_MODEL: str = "llama3.2:3b"  # Changed from gemma3:latest
+    OLLAMA_SUMMARIZATION_MODEL: str = "llama3.2:3b"  # Better for summarization
+    OLLAMA_MULTILINGUAL_MODEL: str = "llama3.2:3b"  # Better multilingual support
+    OLLAMA_FALLBACK_MODEL: str = "mistral:7b"  # Fallback option
+
+    # Ollama Settings
+    OLLAMA_USE_STRUCTURED_OUTPUT: bool = True
+    OLLAMA_TEMPERATURE: float = 0.1  # Lower for more consistent JSON
+    OLLAMA_MAX_RETRIES: int = 3
     
     # Audio Processing
     HUGGINGFACE_TOKEN: Optional[str] = None

@@ -150,7 +150,7 @@ def summarize_meeting_multilingual(transcript, participants, language=None, addi
         print(f"Error generating {language_name} summary: {str(e)}. Falling back to English.")
         return original_summarize_meeting(transcript, participants)
     
-def chunk_transcript(transcript, max_chunk_size=8000):
+def chunk_transcript(transcript, max_chunk_size=15000):
     """
     Split a long transcript into manageable chunks to avoid context window limitations
     

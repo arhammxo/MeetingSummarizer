@@ -9,6 +9,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
 import logging
+from services.llm_service import get_ollama_llm
+from config import settings
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -203,167 +205,132 @@ def merge_analyses(analyses):
 
 # Define the nodes for our graph
 def create_analyze_node(language=None):
-    """Create the analyze node with language-specific instructions"""
+    """Create the analyze node with simplified prompts"""
     language_instructions = ""
-    if language:
-        if language == "hi":
-            language_instructions = "Respond in Hindi language using Devanagari script."
-        elif language != "en":  # For languages other than English
-            language_instructions = f"Respond in {language} language."
+    if language and language != "en":
+        language_instructions = f"Output in {language} language."
     
-    # 1. Analyze the transcript - using a completely different template approach
-    system_message = SystemMessage(content=f"""You are an expert meeting analyst. Analyze the provided meeting transcript 
-    and identify the following elements.
+    system_message = SystemMessage(content=f"""Analyze the meeting transcript and return JSON with this exact structure:
+{{
+  "meeting_purpose": "brief purpose",
+  "main_topics": ["topic1", "topic2", "topic3"],
+  "emotional_tone": "brief tone description",
+  "participation_level": "brief participation description",
+  "disagreement_areas": ["area1", "area2"]
+}}
 
-    IMPORTANT: Your response MUST be VALID JSON with NO additional text before or after. 
-    You are analyzing a CHUNK of a longer transcript - maintain strict JSON format regardless of partial context.
-
-    Your response MUST follow this exact JSON structure:
-    {{
-    "meeting_purpose": "brief description of meeting purpose",
-    "main_topics": ["topic1", "topic2", "topic3"],
-    "emotional_tone": "description of emotional tone",
-    "participation_level": "description of participation balance",
-    "disagreement_areas": ["area1", "area2"]
-    }}
-
-    DO NOT:
-    - Start with phrases like "Summary of the Conversation"
-    - Include any markdown formatting
-    - Write in narrative form
-    - Add explanations outside the JSON structure
-    - Use single quotes for JSON keys or values
-
-    Example valid response:
-    {{
-    "meeting_purpose": "Weekly product development status update",
-    "main_topics": ["UI redesign progress", "Backend API performance", "Customer feedback"],
-    "emotional_tone": "Professional with moments of constructive tension",
-    "participation_level": "Dominated by team leads with minimal input from junior members",
-    "disagreement_areas": ["Resource allocation", "Timeline feasibility"]
-    }}
-
-    {language_instructions}""")
+Rules:
+- Return ONLY valid JSON
+- Keep descriptions brief (under 50 words)
+- List 3-5 main topics
+- List 0-3 disagreement areas
+{language_instructions}""")
     
-    user_template = """Here is the meeting transcript: {transcript}
-
-    Participants: {participants}
-    {additional_context_part}"""
+    user_template = """Transcript: {transcript}
+Participants: {participants}"""
     
     def analyze_node(state: AgentState) -> AgentState:
-        """Analyze the meeting transcript to understand context and participants."""
+        """Analyze the meeting transcript"""
         try:
             transcript = state["transcript"]
             participants = state["participants"]
             
-            # Format additional context if provided
-            additional_context_part = ""
-            if state.get("additional_context"):
-                additional_context_part = f"\n\nAdditional context about this meeting: {state['additional_context']}"
+            analysis_schema = {
+                "type": "object",
+                "properties": {
+                    "meeting_purpose": {"type": "string"},
+                    "main_topics": {"type": "array", "items": {"type": "string"}},
+                    "emotional_tone": {"type": "string"},
+                    "participation_level": {"type": "string"},
+                    "disagreement_areas": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["meeting_purpose", "main_topics", "emotional_tone", "participation_level", "disagreement_areas"]
+            }
             
-            # For shorter transcripts, process directly
-            if len(transcript) < 8000:
-                try:
-                    # Create a one-time template without reusing variables
-                    prompt = ChatPromptTemplate.from_messages([
-                        system_message,
-                        HumanMessage(content=user_template.format(
-                            transcript=transcript,
-                            participants=", ".join(participants),
-                            additional_context_part=additional_context_part
-                        ))
-                    ])
-                    
-                    llm = get_llm()
+            # For shorter transcripts
+            if len(transcript) < 15000:
+                prompt = ChatPromptTemplate.from_messages([
+                    system_message,
+                    HumanMessage(content=user_template.format(
+                        transcript=transcript,
+                        participants=", ".join(participants)
+                    ))
+                ])
+                
+                llm = get_llm()
+                
+                if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                    structured_llm = get_ollama_llm(
+                        temperature=0.1,
+                        purpose="summarization",
+                        format_schema=analysis_schema
+                    )
+                    result = prompt | structured_llm
+                    response = result.invoke({})
+                    analysis = json.loads(response.content)
+                else:
                     chain = prompt | llm | JsonOutputParser()
                     analysis = chain.invoke({})
-                    return {**state, "analysis": analysis, "current_step": "summarize"}
-                except Exception as e:
-                    logger.warning(f"JSON parsing error in analyze_node: {e}. Attempting recovery...")
-                    
-                    try:
-                        # Fall back to string output and robust parsing
-                        str_chain = prompt | llm | StrOutputParser()
-                        raw_response = str_chain.invoke({})
-                        
-                        # Use robust parsing
-                        parsed_result = robust_json_parse(raw_response)
-                        logger.info("Successfully recovered JSON structure")
-                        return {**state, "analysis": parsed_result, "current_step": "summarize"}
-                    except Exception as recovery_error:
-                        logger.error(f"Recovery failed: {recovery_error}")
-                        raise
+                
+                return {**state, "analysis": analysis, "current_step": "summarize"}
             
-            # For longer transcripts, split into chunks and analyze separately
+            # For longer transcripts, chunk processing
             chunks = chunk_transcript(transcript)
-            logging.info(f"Splitting long transcript into {len(chunks)} chunks")
+            logging.info(f"Splitting transcript into {len(chunks)} chunks")
             
-            # Analyze each chunk
             chunk_analyses = []
             for i, chunk in enumerate(chunks):
                 logging.info(f"Analyzing chunk {i+1}/{len(chunks)}")
+                
+                chunk_prompt = ChatPromptTemplate.from_messages([
+                    SystemMessage(content=f"Analyze chunk {i+1} of {len(chunks)}. {system_message.content}"),
+                    HumanMessage(content=user_template.format(
+                        transcript=chunk,
+                        participants=", ".join(participants)
+                    ))
+                ])
+                
                 try:
-                    # Add context information for chunk processing
-                    if i > 0:  # Not the first chunk
-                        chunk_context = f"\nNote: This is chunk {i+1} of {len(chunks)} from a longer transcript. Please maintain JSON format despite the partial context."
+                    if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                        structured_llm = get_ollama_llm(
+                            temperature=0.1,
+                            purpose="summarization",
+                            format_schema=analysis_schema
+                        )
+                        result = chunk_prompt | structured_llm
+                        response = result.invoke({})
+                        chunk_analysis = json.loads(response.content)
                     else:
-                        chunk_context = ""
+                        chain = chunk_prompt | llm | JsonOutputParser()
+                        chunk_analysis = chain.invoke({})
                     
-                    # Create a one-time template for each chunk
-                    chunk_prompt = ChatPromptTemplate.from_messages([
-                        system_message,
-                        HumanMessage(content=user_template.format(
-                            transcript=chunk,
-                            participants=", ".join(participants),
-                            additional_context_part=additional_context_part
-                        ) + chunk_context)
-                    ])
-                    
-                    llm = get_llm()
-                    chain = chunk_prompt | llm | JsonOutputParser()
-                    chunk_analysis = chain.invoke({})
                     chunk_analyses.append(chunk_analysis)
                 except Exception as e:
-                    logger.warning(f"JSON parsing error in chunk {i+1}: {e}. Attempting recovery...")
-                    
-                    try:
-                        # Fall back to string output and robust parsing
-                        str_chain = chunk_prompt | llm | StrOutputParser()
-                        raw_response = str_chain.invoke({})
-                        
-                        # Use robust parsing
-                        parsed_result = robust_json_parse(raw_response)
-                        logger.info(f"Successfully recovered JSON structure for chunk {i+1}")
-                        chunk_analyses.append(parsed_result)
-                    except Exception as recovery_error:
-                        logger.error(f"Recovery failed for chunk {i+1}: {recovery_error}")
-                        # Add a placeholder analysis to keep the process going
-                        chunk_analyses.append({
-                            "meeting_purpose": f"Analysis of chunk {i+1}",
-                            "main_topics": [f"Unable to extract topics from chunk {i+1}"],
-                            "emotional_tone": "Unknown",
-                            "participation_level": "Unknown",
-                            "disagreement_areas": []
-                        })
+                    logger.warning(f"Chunk {i+1} failed: {e}")
+                    chunk_analyses.append({
+                        "meeting_purpose": f"Chunk {i+1} analysis failed",
+                        "main_topics": ["Error processing chunk"],
+                        "emotional_tone": "Unknown",
+                        "participation_level": "Unknown",
+                        "disagreement_areas": []
+                    })
             
-            # Merge analyses
             merged_analysis = merge_analyses(chunk_analyses)
             return {**state, "analysis": merged_analysis, "current_step": "summarize"}
+            
         except Exception as e:
-            logging.error(f"Error analyzing transcript: {str(e)}")
-            # Return a basic analysis to avoid breaking the workflow
-            basic_analysis = {
-                "meeting_purpose": "Unable to determine due to processing error",
-                "main_topics": ["Error in analysis"],
+            logger.error(f"Error in analyze_node: {str(e)}")
+            return {**state, "analysis": {
+                "meeting_purpose": "Error analyzing transcript",
+                "main_topics": ["Analysis failed"],
                 "emotional_tone": "Unknown",
                 "participation_level": "Unknown",
                 "disagreement_areas": []
-            }
-            return {**state, "analysis": basic_analysis, "current_step": "summarize"}
+            }, "current_step": "summarize"}
     
     return analyze_node
 
-def chunk_transcript(transcript, max_chunk_size=8000):
+def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
     """
     Split a long transcript into manageable chunks to avoid context window limitations
     
@@ -414,48 +381,53 @@ def chunk_transcript(transcript, max_chunk_size=8000):
     return chunks
 
 def create_summarize_node(language=None):
-    """Create the summarize node with language-specific instructions"""
-    language_instructions = ""
-    if language:
-        if language == "hi":
-            language_instructions = "Respond in Hindi language using Devanagari script."
-        elif language != "en":  # For languages other than English
-            language_instructions = f"Respond in {language} language."
+    """Create the summarize node with simplified prompts"""
+    language_instructions = f"Output in {language} language." if language and language != "en" else ""
     
-    # 2. Summarize the meeting
-    system_message = SystemMessage(content=f"""You are an expert meeting summarizer. Based on the meeting transcript and analysis,
-    create a concise summary of the meeting that captures the essence of what was discussed and decided.
+    system_message = SystemMessage(content=f"""Create a meeting summary with this JSON structure:
+{{
+  "summary": "2-3 sentence overview",
+  "key_points": ["point1", "point2", "point3"],
+  "decisions": ["decision1", "decision2"]
+}}
+
+Keep it concise and factual. {language_instructions}""")
     
-    Provide the following in your JSON response:
-    - summary: A 2-3 sentence overview of the meeting
-    - key_points: A list of important topics discussed 
-    - decisions: A list of decisions made during the meeting
-    
-    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
-    {language_instructions}""")
-    
-    user_template = """Meeting Transcript: {transcript}
-    
-    Meeting Analysis: {analysis}
-    
-    Participants: {participants}"""
+    user_template = """Based on this analysis: {analysis}
+Transcript: {transcript}
+Participants: {participants}"""
     
     def summarize_node(state: AgentState) -> AgentState:
-        """Generate a concise summary of the meeting."""
+        """Generate a concise summary of the meeting"""
         try:
-            # Create a one-time template
+            summary_schema = {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "key_points": {"type": "array", "items": {"type": "string"}},
+                    "decisions": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["summary", "key_points", "decisions"]
+            }
+            
             prompt = ChatPromptTemplate.from_messages([
                 system_message,
                 HumanMessage(content=user_template.format(
-                    transcript=state["transcript"],
+                    transcript=state["transcript"][:5000],
                     analysis=json.dumps(state["analysis"]),
                     participants=", ".join(state["participants"])
                 ))
             ])
             
-            llm = get_llm()
-            chain = prompt | llm | JsonOutputParser()
-            summary_data = chain.invoke({})
+            if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                llm = get_ollama_llm(temperature=0.1, purpose="summarization", format_schema=summary_schema)
+                result = prompt | llm
+                response = result.invoke({})
+                summary_data = json.loads(response.content)
+            else:
+                llm = get_llm()
+                chain = prompt | llm | JsonOutputParser()
+                summary_data = chain.invoke({})
             
             meeting_summary = MeetingSummary(
                 summary=summary_data["summary"],
@@ -463,162 +435,86 @@ def create_summarize_node(language=None):
                 decisions=summary_data["decisions"]
             )
             return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
-        except Exception as e:
-            logger.warning(f"JSON parsing error in summarize_node: {e}. Attempting recovery...")
             
-            try:
-                # Fall back to string output and robust parsing
-                str_chain = prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({})
-                
-                # Use robust parsing
-                parsed_result = robust_json_parse(raw_response)
-                logger.info("Successfully recovered JSON structure for summary")
-                
-                meeting_summary = MeetingSummary(
-                    summary=parsed_result.get("summary", "Error generating summary"),
-                    key_points=parsed_result.get("key_points", ["No key points extracted"]),
-                    decisions=parsed_result.get("decisions", [])
-                )
-                return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
-            except Exception as recovery_error:
-                logger.error(f"Recovery failed: {recovery_error}")
-                # Return a basic summary to keep the process going
-                meeting_summary = MeetingSummary(
-                    summary="Error generating summary",
-                    key_points=["Error in processing"],
-                    decisions=[]
-                )
-                return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
+        except Exception as e:
+            logger.error(f"Error in summarize_node: {str(e)}")
+            meeting_summary = MeetingSummary(
+                summary="Error generating summary",
+                key_points=["Unable to extract key points"],
+                decisions=[]
+            )
+            return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
     
     return summarize_node
 
 def create_extract_actions_node(language=None):
-    """Create the action extraction node with language-specific instructions"""
-    language_instructions = ""
-    if language:
-        if language == "hi":
-            language_instructions = "Respond in Hindi language using Devanagari script."
-        elif language != "en":  # For languages other than English
-            language_instructions = f"Respond in {language} language."
+    """Create the action extraction node with simplified prompts"""
+    language_instructions = f"Output in {language} language." if language and language != "en" else ""
     
-    # 3. Extract action items
-    system_message = SystemMessage(content=f"""You are an expert at identifying action items from meeting transcripts.
-    Your task is to extract clear action items from the provided meeting transcript.
+    system_message = SystemMessage(content=f"""Extract action items as JSON array:
+[
+  {{
+    "action": "specific action",
+    "assignee": "person name or Unassigned",
+    "due_date": "date or Not specified",
+    "priority": "high/medium/low"
+  }}
+]
+
+Return empty array [] if no actions found. {language_instructions}""")
     
-    For each action item, identify:
-    - action: The specific action to be taken
-    - assignee: Who is responsible for the action
-    - due_date: Any mentioned deadline or due date
-    - priority: The priority level (high, medium, low) based on context
-    
-    Return your results as a JSON array. If no action items are mentioned, return an empty array.
-    For missing fields, use these defaults: "Not specified" for due_date, "medium" for priority, "Unassigned" for assignee.
-    
-    Format your response as a JSON array. DO NOT include explanatory text before or after the JSON.
-    {language_instructions}""")
-    
-    user_template = """Meeting Transcript: {transcript}
-    
-    Meeting Summary: {summary}
-    
-    Participants: {participants}"""
+    user_template = """Find action items in: {transcript}
+Participants: {participants}"""
     
     def extract_actions_node(state: AgentState) -> AgentState:
-        """Extract action items from the meeting transcript."""
+        """Extract action items from the meeting transcript"""
         try:
-            # Create a one-time template
+            actions_schema = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "assignee": {"type": "string"},
+                        "due_date": {"type": "string"},
+                        "priority": {"type": "string", "enum": ["high", "medium", "low"]}
+                    },
+                    "required": ["action", "assignee", "due_date", "priority"]
+                }
+            }
+            
             prompt = ChatPromptTemplate.from_messages([
                 system_message,
                 HumanMessage(content=user_template.format(
-                    transcript=state["transcript"],
-                    summary=state["meeting_summary"].model_dump_json(),
+                    transcript=state["transcript"][:5000],
                     participants=", ".join(state["participants"])
                 ))
             ])
             
-            llm = get_llm()
-            chain = prompt | llm | JsonOutputParser()
-            action_data = chain.invoke({})
+            if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                llm = get_ollama_llm(temperature=0.1, purpose="summarization", format_schema=actions_schema)
+                result = prompt | llm
+                response = result.invoke({})
+                action_data = json.loads(response.content)
+            else:
+                llm = get_llm()
+                chain = prompt | llm | JsonOutputParser()
+                action_data = chain.invoke({})
             
             action_items = []
             for item in action_data:
-                # Handle possible None values by ensuring all fields are strings
-                action = item.get("action", "")
-                assignee = item.get("assignee", "Unassigned")
-                
-                # Explicitly convert None to strings
-                due_date = item.get("due_date")
-                if due_date is None or due_date == "":
-                    due_date = "Not specified"
-                    
-                priority = item.get("priority")
-                if priority is None or priority == "":
-                    priority = "medium"
-                
                 action_items.append(ActionItem(
-                    action=action,
-                    assignee=assignee,
-                    due_date=due_date,
-                    priority=priority
+                    action=item.get("action", ""),
+                    assignee=item.get("assignee", "Unassigned"),
+                    due_date=item.get("due_date", "Not specified"),
+                    priority=item.get("priority", "medium")
                 ))
             
             return {**state, "action_items": action_items, "current_step": "format_output"}
-        except Exception as e:
-            logger.warning(f"JSON parsing error in extract_actions_node: {e}. Attempting recovery...")
             
-            try:
-                # Fall back to string output and robust parsing
-                str_chain = prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({})
-                
-                # Use robust parsing
-                try:
-                    parsed_result = robust_json_parse(raw_response)
-                    if isinstance(parsed_result, list):
-                        action_data = parsed_result
-                    else:
-                        # If we get a dict instead of a list, look for an action_items field
-                        action_data = parsed_result.get("action_items", [])
-                    
-                    logger.info("Successfully recovered action items")
-                except Exception:
-                    # If we can't parse as JSON at all, try to extract action-like patterns
-                    logger.warning("Attempting text-based action extraction")
-                    action_data = []
-                    lines = raw_response.split('\n')
-                    for line in lines:
-                        if (any(word in line.lower() for word in ["action", "task", "todo", "assign"]) 
-                            and len(line) > 10):
-                            action_data.append({"action": line.strip()})
-                
-                action_items = []
-                for item in action_data:
-                    if isinstance(item, dict):
-                        action = item.get("action", "")
-                        assignee = item.get("assignee", "Unassigned")
-                        due_date = item.get("due_date", "Not specified")
-                        priority = item.get("priority", "medium")
-                        
-                        action_items.append(ActionItem(
-                            action=action,
-                            assignee=assignee,
-                            due_date=due_date,
-                            priority=priority
-                        ))
-                    elif isinstance(item, str):
-                        action_items.append(ActionItem(
-                            action=item,
-                            assignee="Unassigned",
-                            due_date="Not specified",
-                            priority="medium"
-                        ))
-                
-                return {**state, "action_items": action_items, "current_step": "format_output"}
-            except Exception as recovery_error:
-                logger.error(f"Recovery failed: {recovery_error}")
-                # Return an empty action items list to keep the process going
-                return {**state, "action_items": [], "current_step": "format_output"}
+        except Exception as e:
+            logger.error(f"Error in extract_actions_node: {str(e)}")
+            return {**state, "action_items": [], "current_step": "format_output"}
     
     return extract_actions_node
 
