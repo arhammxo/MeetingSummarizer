@@ -332,7 +332,13 @@ if input_method == "Upload Audio":
     # If audio has been processed, show a preview
     if st.session_state.audio_processing_complete:
         with st.expander("Preview Transcript", expanded=False):
-            st.text(st.session_state.transcript_content[:1000] + ("..." if len(st.session_state.transcript_content) > 1000 else ""))
+            st.text_area(
+                "Transcript",
+                value=st.session_state.transcript_content,
+                height=400,
+                disabled=True,
+                label_visibility="collapsed"
+            )
 
 elif input_method == "Upload Text":
     text_file = st.file_uploader(
@@ -347,7 +353,13 @@ elif input_method == "Upload Text":
 
         # Preview of uploaded file
         with st.expander("Preview Uploaded Transcript", expanded=False):
-            st.text(file_content[:1000] + ("..." if len(file_content) > 1000 else ""))
+            st.text_area(
+                "Transcript",
+                value=file_content,
+                height=400,
+                disabled=True,
+                label_visibility="collapsed"
+            )
 
         # Detect participants from file
         detected_participants = extract_participants(file_content)

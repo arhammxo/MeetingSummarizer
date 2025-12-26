@@ -440,81 +440,76 @@ def format_conversation(diarization_result, transcription_segments):
     """
     Align transcription with speaker segments
     Returns conversation data with speaker labels and confidence scores
+    Creates one conversation segment per transcription segment to preserve granularity
     """
-    conversation_data = []  # List to hold speaker segments
-    used_segments = set()
+    conversation_data = []
 
-    # Sort both diarization results and transcription segments by start time
+    # Sort diarization turns and transcription segments by start time
     diarization_turns = sorted(diarization_result.itertracks(yield_label=True), key=lambda x: x[0].start)
     transcription_segments = sorted(transcription_segments, key=lambda x: x["start"])
 
-    for turn, _, speaker in diarization_turns:
-        turn_start = turn.start
-        turn_end = turn.end
-        segment_text = []
-        segment_confidence = []
-        segment_details = []
+    # Build speaker map for efficient lookup
+    speaker_map = [(turn.start, turn.end, speaker) for turn, _, speaker in diarization_turns]
 
-        for seg_idx, segment in enumerate(transcription_segments):
-            if seg_idx in used_segments:
-                continue  # Skip already used segments
+    # Process each transcription segment individually
+    for segment in transcription_segments:
+        seg_start = segment["start"]
+        seg_end = segment["end"]
+        seg_mid = (seg_start + seg_end) / 2
 
-            seg_start = segment["start"]
-            seg_end = segment["end"]
+        # Find speaker by checking which diarization turn contains the segment midpoint
+        assigned_speaker = None
+        for turn_start, turn_end, speaker in speaker_map:
+            if turn_start <= seg_mid <= turn_end:
+                assigned_speaker = speaker
+                break
 
-            # Calculate overlap duration
-            overlap_start = max(turn_start, seg_start)
-            overlap_end = min(turn_end, seg_end)
-            overlap_duration = max(0, overlap_end - overlap_start)
+        # If no exact match, find turn with maximum overlap
+        if assigned_speaker is None:
+            max_overlap = 0
+            for turn_start, turn_end, speaker in speaker_map:
+                overlap_start = max(turn_start, seg_start)
+                overlap_end = min(turn_end, seg_end)
+                overlap_duration = max(0, overlap_end - overlap_start)
+                if overlap_duration > max_overlap:
+                    max_overlap = overlap_duration
+                    assigned_speaker = speaker
 
-            # Require at least 50% overlap with the speaker turn
-            segment_duration = seg_end - seg_start
-            # Add safety check for zero-length segments
-            if segment_duration > 0 and overlap_duration / segment_duration >= 0.5:
-                segment_text.append(segment["text"].strip())
+        # Default to first speaker if no match
+        if assigned_speaker is None and speaker_map:
+            assigned_speaker = speaker_map[0][2]
 
-                # Add confidence score if available
-                if "confidence" in segment:
-                    segment_confidence.append(segment["confidence"])
+        # Create conversation segment for this transcription segment
+        conversation_segment = {
+            "speaker": assigned_speaker or "UNKNOWN",
+            "text": segment["text"].strip(),
+            "start_time": seg_start,
+            "end_time": seg_end
+        }
 
-                # Store full segment details for later reference
-                segment_details.append({
-                    "text": segment["text"].strip(),
-                    "start": segment["start"],
-                    "end": segment["end"],
-                    "confidence": segment.get("confidence", None),
-                    "confidence_level": segment.get("confidence_level", None),
-                    "words": segment.get("words", [])
-                })
+        # Add confidence if available
+        if "confidence" in segment:
+            conversation_segment["confidence"] = segment["confidence"]
+            if conversation_segment["confidence"] >= 90:
+                conversation_segment["confidence_level"] = "high"
+            elif conversation_segment["confidence"] >= 70:
+                conversation_segment["confidence_level"] = "medium"
+            else:
+                conversation_segment["confidence_level"] = "low"
+        elif "confidence_level" in segment:
+            conversation_segment["confidence_level"] = segment["confidence_level"]
 
-                used_segments.add(seg_idx)  # Mark segment as used
+        # Store segment details
+        conversation_segment["segments"] = [{
+            "text": segment["text"].strip(),
+            "start": segment["start"],
+            "end": segment["end"],
+            "confidence": segment.get("confidence", None),
+            "confidence_level": segment.get("confidence_level", None),
+            "words": segment.get("words", [])
+        }]
 
-        if segment_text:
-            # Prepare the conversation segment
-            conversation_segment = {
-                "speaker": speaker,
-                "text": ' '.join(segment_text).strip(),
-                "start_time": turn_start,
-                "end_time": turn_end
-            }
-
-            # Add confidence metrics if available
-            if segment_confidence:
-                conversation_segment["confidence"] = round(sum(segment_confidence) / len(segment_confidence), 2)
-
-                # Categorize the overall segment confidence
-                if conversation_segment["confidence"] >= 90:
-                    conversation_segment["confidence_level"] = "high"
-                elif conversation_segment["confidence"] >= 70:
-                    conversation_segment["confidence_level"] = "medium"
-                else:
-                    conversation_segment["confidence_level"] = "low"
-
-            # Add detailed segment information
-            if segment_details:
-                conversation_segment["segments"] = segment_details
-
-            conversation_data.append(conversation_segment)
+        conversation_data.append(conversation_segment)
 
     return conversation_data
 
