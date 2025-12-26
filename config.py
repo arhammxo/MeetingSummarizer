@@ -10,63 +10,63 @@ load_dotenv()
 class Settings(BaseSettings):
     """Application settings configured via environment variables"""
     
-    # OpenAI Configuration (legacy, can be removed if fully migrating)
-    OPENAI_API_KEY: Optional[str] = None
+    # OpenAI Configuration (legacy, kept for optional fallback)
+    OPENAI_API_KEY: Optional[str] = "uigyjrxcgijolk"
 
     # LLM Configuration
-    LLM_PROVIDER: str = "openai"  # Options: "openai", "ollama"
-    
+    LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
+
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.2:3b"  # Changed from gemma3:latest
-    OLLAMA_SUMMARIZATION_MODEL: str = "llama3.2:3b"  # Better for summarization
-    OLLAMA_MULTILINGUAL_MODEL: str = "llama3.2:3b"  # Better multilingual support
-    OLLAMA_FALLBACK_MODEL: str = "mistral:7b"  # Fallback option
+    OLLAMA_MODEL: str = "qwen2.5:7b"  # Primary local model
+    OLLAMA_SUMMARIZATION_MODEL: str = "qwen2.5:7b"
+    OLLAMA_MULTILINGUAL_MODEL: str = "qwen2.5:7b"
+    OLLAMA_FALLBACK_MODEL: str = "qwen2.5:7b"
 
     # Ollama Settings
     OLLAMA_USE_STRUCTURED_OUTPUT: bool = True
     OLLAMA_TEMPERATURE: float = 0.1  # Lower for more consistent JSON
     OLLAMA_MAX_RETRIES: int = 3
-    
+
     # Audio Processing
     HUGGINGFACE_TOKEN: Optional[str] = None
-    
+
     # Storage
     STORAGE_DIR: str = "job_results"
-    
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     LOG_LEVEL: str = "info"
     WORKERS: int = 1
-    
+
     # Security
     ENABLE_HTTPS: bool = False
     SSL_CERT_PATH: Optional[str] = None
     SSL_KEY_PATH: Optional[str] = None
-    
+
     # CORS
     CORS_ORIGINS: str = "*"
-    
+
     @validator("CORS_ORIGINS")
     def parse_cors_origins(cls, v):
         if v == "*":
             return ["*"]
         return [i.strip() for i in v.split(",") if i.strip()]
-    
+
     @validator("LLM_PROVIDER")
     def validate_llm_provider(cls, v, values):
         if v not in ["openai", "ollama"]:
             raise ValueError(f"LLM_PROVIDER must be 'openai' or 'ollama', got {v}")
-        
+
         # If using OpenAI, validate API key
         if v == "openai" and not values.get("OPENAI_API_KEY"):
             raise ValueError(
                 "OPENAI_API_KEY environment variable is required when LLM_PROVIDER is 'openai'"
             )
-            
+
         return v
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
