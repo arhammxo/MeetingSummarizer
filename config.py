@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Audio Processing
     HUGGINGFACE_TOKEN: Optional[str] = None
+    DIARIZATION_MODEL_PATH: str = "./models/speaker-diarization-3.1"
 
     # Storage
     STORAGE_DIR: str = "job_results"
@@ -70,6 +71,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # Silently ignore unrecognised env vars
 
 # Initialize settings
 settings = Settings()

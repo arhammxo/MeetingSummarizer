@@ -280,7 +280,8 @@ def diarize_audio(audio_file: str) -> Any:
         )
 
         logger.info(f"Loading diarization pipeline from local path: {model_dir}")
-        diarization_pipeline = Pipeline.from_pretrained(model_dir)
+        config_path = Path(model_dir) / "config.yaml"
+        diarization_pipeline = Pipeline.from_pretrained(config_path)
 
         # Use GPU if available
         diarization_pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
