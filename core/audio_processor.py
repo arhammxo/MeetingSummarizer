@@ -273,12 +273,14 @@ def diarize_audio(audio_file: str) -> Any:
         else:
             audio_file_to_process = audio_file
 
-        # Replace with your own HuggingFace token or use environment variable
-        hf_token = os.environ.get("HUGGINGFACE_TOKEN", "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")
+        # ── Local model path (set via env var or hardcode) ──────────────────
+        model_dir = os.environ.get(
+            "DIARIZATION_MODEL_PATH",
+            "./models/speaker-diarization-3.1"
+        )
 
-        diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token)
+        logger.info(f"Loading diarization pipeline from local path: {model_dir}")
+        diarization_pipeline = Pipeline.from_pretrained(model_dir)
 
         # Use GPU if available
         diarization_pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))

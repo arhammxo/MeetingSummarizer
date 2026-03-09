@@ -33,6 +33,29 @@ The LangGraph workflow consists of four main steps:
 - Python 3.9+
 - An OpenAI API key (for GPT-4o access)
 
+### Download speaker diarization models
+```
+# run this ONCE with your HF token
+from huggingface_hub import snapshot_download
+
+HF_TOKEN = "your_hf_token_here"  # Needed for one-time download
+
+print("Downloading speaker-diarization-3.1...")
+snapshot_download(
+    "pyannote/speaker-diarization-3.1",
+    token=HF_TOKEN,
+    local_dir="./models/speaker-diarization-3.1"
+)
+
+print("Downloading segmentation-3.0...")
+snapshot_download(
+    "pyannote/segmentation-3.0",
+    token=HF_TOKEN,
+    local_dir="./models/segmentation-3.0"
+)
+
+print("All models downloaded.")
+```
 ### Installation
 
 1. Clone this repository
