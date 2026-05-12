@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     # LLM Configuration
     LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
-
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "mistral:latest"  # Using installed model

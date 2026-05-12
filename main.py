@@ -169,11 +169,11 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
         
         # First, check if this is an MP3 file and convert if needed
         from pathlib import Path
-        from services.audio_converter import is_mp3_file, convert_audio_to_wav
+        from services.audio_converter import needs_conversion, convert_audio_to_wav
         
-        if is_mp3_file(audio_path):
+        if needs_conversion(audio_path):
             # Update status to show we're converting
-            update_job_status(job_id, JobStatus.PROCESSING, "Converting MP3 to WAV format", progress=10)
+            update_job_status(job_id, JobStatus.PROCESSING, "Converting audio to WAV format", progress=10)
             
             try:
                 # Convert to WAV format

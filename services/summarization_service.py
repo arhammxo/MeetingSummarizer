@@ -103,7 +103,6 @@ except ImportError as e:
         }
 
 # Custom implementation of multilingual speaker summaries
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 

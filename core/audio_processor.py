@@ -260,17 +260,17 @@ def diarize_audio(audio_file: str) -> Any:
     Returns:
         Diarization result
     """
-    from services.audio_converter import is_mp3_file, convert_audio_to_wav
-
+    from services.audio_converter import needs_conversion, convert_audio_to_wav
+    
     logger.info(f"Starting diarization for file: {audio_file}")
 
     # Track if we create a temporary file that needs cleanup
     temp_file = None
 
     try:
-        # Convert MP3 to WAV if needed
-        if is_mp3_file(audio_file):
-            logger.info(f"Converting MP3 file to WAV before diarization: {audio_file}")
+        # Convert to WAV if needed
+        if needs_conversion(audio_file):
+            logger.info(f"Converting file to WAV before diarization: {audio_file}")
             temp_file = convert_audio_to_wav(audio_file)
             logger.info(f"Using converted file for diarization: {temp_file}")
             audio_file_to_process = temp_file
@@ -546,7 +546,18 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
 
     try:
         start_total = time.time()
-
+        # Ensure audio is in WAV format before passing to Whisper/Librosa
+        from services.audio_converter import needs_conversion, convert_audio_to_wav
+        
+        original_file_path = audio_file_path
+        if needs_conversion(audio_file_path):
+            logger.info(f"Converting audio to WAV format before processing: {audio_file_path}")
+            try:
+                audio_file_path = convert_audio_to_wav(audio_file_path)
+            except Exception as e:
+                logger.error(f"Failed to convert audio: {str(e)}")
+                # Continue with original and hope librosa handles it via ffmpeg fallback
+        
         # Transcribe with timing
         step_start = time.time()
         transcription_result = transcribe_audio(audio_file_path, language)
@@ -670,7 +681,12 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         # Add to metrics
         if speaker_metrics:
             metrics['speaker_confidence_metrics'] = speaker_metrics
-
+        # Clean up the converted file if we created one
+        if 'original_file_path' in locals() and original_file_path != audio_file_path and os.path.exists(audio_file_path):
+            try:
+                os.unlink(audio_file_path)
+            except:
+                pass
         return metrics
 
     except Exception as e:

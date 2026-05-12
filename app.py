@@ -403,7 +403,25 @@ with st.form("meeting_form"):
         placeholder="Alice, Bob, Charlie, Dave, Eva",
         help="Participants are automatically detected. You can edit this list if needed."
     )
-
+    # Prior Information / Context
+    context_file = st.file_uploader(
+        "Upload Prior Context File (Optional)",
+        type=["txt"],
+        help="Upload a text file containing prior context for the meeting."
+    )
+    
+    uploaded_context = ""
+    if context_file:
+        uploaded_context = context_file.getvalue().decode("utf-8")
+        st.success("Context file uploaded successfully!")
+        
+    meeting_context = st.text_area(
+        "Prior Information / Meeting Context (Optional)",
+        value=uploaded_context,
+        placeholder="e.g., This is a weekly sync for the engineering team. Pay special attention to any database migration tasks.",
+        help="Give the AI a 'heads up' about what the meeting is about before it reads the transcript."
+    )
+    
     submit_button = st.form_submit_button("Generate Summary & Action Items")
 
 # Process the transcript
@@ -486,7 +504,8 @@ if submit_button:
                 result = summarize_long_meeting(
                     st.session_state.audio_transcript["transcript"],
                     language=st.session_state.detected_language,
-                    progress_callback=update_status
+                    progress_callback=update_status,
+                    context=meeting_context
                 )
 
                 # Update UI after each step
@@ -500,18 +519,23 @@ if submit_button:
                         update_progress(i * 20, f"Summarizing... {i * 20}%")
                         update_ui_progress()
                         time.sleep(0.3)  # Just for UI feedback
-
-                    result = summarize_meeting(final_transcript, participants,
-                                              language=st.session_state.detected_language)
+                    result = summarize_meeting(
+                        final_transcript, 
+                        participants, 
+                        language=st.session_state.detected_language,
+                        context=meeting_context
+                    )
                 else:
                     # Simulate progress updates for standard processing
                     for i in range(5):
                         update_progress(i * 20, f"Summarizing... {i * 20}%")
                         update_ui_progress()
                         time.sleep(0.3)  # Just for UI feedback
-
-                    result = summarize_meeting(final_transcript, participants)
-
+                    result = summarize_meeting(
+                        final_transcript, 
+                        participants,
+                        context=meeting_context
+                    )
             st.session_state.meeting_result = result
 
             # Update progress to 100%

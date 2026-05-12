@@ -4,7 +4,7 @@ import re
 from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
@@ -147,6 +147,7 @@ class AgentState(TypedDict):
     transcript: str
     participants: List[str]
     language: Optional[str]
+    context: Optional[str]
     current_step: Literal["initialization", "analyze", "summarize", "extract_actions", "format_output", "complete"]
     analysis: Dict
     meeting_summary: MeetingSummary
@@ -227,7 +228,10 @@ Rules:
 {language_instructions}""")
     
     user_template = """Transcript: {transcript}
-Participants: {participants}"""
+Participants: {participants}
+
+CRITICAL USER INSTRUCTIONS: {context}
+You MUST strictly follow these instructions. Ignore any topics the user tells you to ignore, and focus ONLY on the topics the user tells you to focus on."""
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript"""
@@ -253,7 +257,8 @@ Participants: {participants}"""
                     system_message,
                     HumanMessage(content=user_template.format(
                         transcript=transcript,
-                        participants=", ".join(participants)
+                        participants=", ".join(participants),
+                        context=state.get("context", "None provided.")
                     ))
                 ])
                 
@@ -297,7 +302,8 @@ Participants: {participants}"""
                     SystemMessage(content=f"Analyze chunk {i+1} of {len(chunks)}. {system_message.content}"),
                     HumanMessage(content=user_template.format(
                         transcript=chunk,
-                        participants=", ".join(participants)
+                        participants=", ".join(participants),
+                        context=state.get("context", "None provided.")
                     ))
                 ])
                 
@@ -420,7 +426,10 @@ Keep it concise and factual. {language_instructions}""")
     
     user_template = """Based on this analysis: {analysis}
 Transcript: {transcript}
-Participants: {participants}"""
+Participants: {participants}
+
+CRITICAL USER INSTRUCTIONS: {context}
+You MUST strictly follow these instructions. Ignore any topics the user tells you to ignore, and focus ONLY on the topics the user tells you to focus on."""
     
     def summarize_node(state: AgentState) -> AgentState:
         """Generate a concise summary of the meeting"""
@@ -440,7 +449,8 @@ Participants: {participants}"""
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
                     analysis=json.dumps(state["analysis"]),
-                    participants=", ".join(state["participants"])
+                    participants=", ".join(state["participants"]),
+                    context=state.get("context", "None provided.")
                 ))
             ])
             
@@ -489,7 +499,10 @@ def create_extract_actions_node(language=None):
 Return empty array [] if no actions found. {language_instructions}""")
     
     user_template = """Find action items in: {transcript}
-Participants: {participants}"""
+Participants: {participants}
+
+CRITICAL USER INSTRUCTIONS: {context}
+You MUST strictly follow these instructions. If the user tells you to ignore a topic, DO NOT extract any action items related to that topic."""
     
     def extract_actions_node(state: AgentState) -> AgentState:
         """Extract action items from the meeting transcript"""
@@ -512,7 +525,8 @@ Participants: {participants}"""
                 system_message,
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
-                    participants=", ".join(state["participants"])
+                    participants=", ".join(state["participants"]),
+                    context=state.get("context", "None provided.")
                 ))
             ])
             
@@ -635,7 +649,7 @@ def create_meeting_summarizer_graph(language=None):
     return workflow.compile()
 
 # Main function to run the meeting summarizer
-def summarize_meeting(transcript: str, participants: List[str], language: str = None, additional_context: str = None):
+def summarize_meeting(transcript: str, participants: List[str], language: str = None, context: str = None):
     """Run the meeting summarizer on a transcript and return the summary and action items."""
     # Check for empty inputs
     if not transcript or not transcript.strip():
@@ -656,7 +670,7 @@ def summarize_meeting(transcript: str, participants: List[str], language: str = 
             "transcript": transcript,
             "participants": participants,
             "language": language,
-            "additional_context": additional_context,  # Add additional context
+            "context": context,
             "current_step": "initialization",
             "analysis": {},
             "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),
