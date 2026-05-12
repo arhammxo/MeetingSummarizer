@@ -11,6 +11,7 @@ from core.audio_processor import process_audio_file
 from core.speaker_summarizer import generate_speaker_summaries
 from core.long_recording_processor import process_long_audio
 from core.summarize_long_transcripts import summarize_long_meeting
+from core.realtime_processor import RealTimeTranscriber
 
 # Check for OpenAI API key
 #if not os.environ.get("OPENAI_API_KEY"):
@@ -102,6 +103,14 @@ if 'processing_status' not in st.session_state:
     st.session_state.processing_status = ""
 if 'is_long_recording' not in st.session_state:
     st.session_state.is_long_recording = False
+if 'realtime_transcriber' not in st.session_state:
+    st.session_state.realtime_transcriber = None
+if 'is_recording' not in st.session_state:
+    st.session_state.is_recording = False
+if 'recorded_audio_path' not in st.session_state:
+    st.session_state.recorded_audio_path = None
+if 'rt_trigger_process' not in st.session_state:
+    st.session_state.rt_trigger_process = False
 
 # Function to update processing progress
 def update_progress(progress, status):
@@ -196,7 +205,7 @@ def display_speaker_summaries():
 # Add tabs for different input methods
 input_method = st.radio(
     "Choose input method:",
-    ["Upload Audio", "Paste Text", "Upload Text"],
+    ["Upload Audio", "Real-Time Audio", "Paste Text", "Upload Text"],
     horizontal=True
 )
 
@@ -340,6 +349,177 @@ if input_method == "Upload Audio":
                 label_visibility="collapsed"
             )
 
+elif input_method == "Real-Time Audio":
+    st.info("Record audio directly from your microphone. The app will transcribe it in real-time.")
+    
+    # Language selection
+    language_options = {
+        "Auto-detect": None,
+        "English": "en",
+        "Hindi": "hi",
+        "Spanish": "es",
+        "French": "fr",
+        "German": "de",
+        "Chinese": "zh",
+        "Japanese": "ja",
+        "Russian": "ru",
+        "Arabic": "ar"
+    }
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        selected_language = st.selectbox(
+            "Select Audio Language",
+            options=list(language_options.keys()),
+            index=0,
+            key="rt_lang_select",
+            help="Select the primary language of your audio."
+        )
+    
+    with col2:
+        is_long_recording = st.checkbox(
+            "This will be a long recording (>15 minutes)",
+            value=st.session_state.is_long_recording,
+            key="rt_long_rec",
+            help="Enable special processing for longer recordings."
+        )
+        st.session_state.is_long_recording = is_long_recording
+    
+    language_code = language_options[selected_language]
+    
+    st.write("### Live Recording Controls")
+    
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        start_btn = st.button("🎙️ Start Listening", disabled=st.session_state.is_recording, use_container_width=True)
+    with col_btn2:
+        stop_btn = st.button("⏹️ Stop & Summarize", disabled=not st.session_state.is_recording, use_container_width=True)
+        
+    if start_btn and not st.session_state.is_recording:
+        st.session_state.is_recording = True
+        st.session_state.audio_processing_complete = False
+        st.session_state.rt_trigger_process = False
+        st.session_state.recorded_audio_path = None
+        try:
+            st.session_state.realtime_transcriber = RealTimeTranscriber()
+            st.session_state.realtime_transcriber.start()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to start recording: {e}")
+            st.session_state.is_recording = False
+            
+    if stop_btn and st.session_state.is_recording:
+        st.session_state.is_recording = False
+        if st.session_state.realtime_transcriber:
+            st.session_state.realtime_transcriber.stop()
+            # Save audio to temp file
+            tmp_dir = tempfile.gettempdir()
+            rt_audio_path = os.path.join(tmp_dir, f"rt_recording_{int(time.time())}.wav")
+            if st.session_state.realtime_transcriber.save_full_audio(rt_audio_path):
+                st.session_state.recorded_audio_path = rt_audio_path
+                st.session_state.rt_trigger_process = True
+            st.session_state.realtime_transcriber = None
+        st.rerun()
+
+    # The Live Transcript view
+    st.write("### Live Transcript")
+    
+    @st.fragment(run_every=2)
+    def live_transcript_view():
+        if st.session_state.is_recording and st.session_state.realtime_transcriber:
+            text = st.session_state.realtime_transcriber.get_transcript()
+            if text:
+                st.text_area("Listening...", value=text, height=200, disabled=True, key=f"rt_txt_{int(time.time())}")
+            else:
+                st.info("Listening... Speak into the microphone.")
+        elif st.session_state.get("recorded_audio_path"):
+            st.success("Recording stopped. Audio saved successfully.")
+        else:
+            st.info("Click 'Start Listening' to begin.")
+            
+    live_transcript_view()
+    
+    # Process the recorded audio if triggered
+    if st.session_state.get("rt_trigger_process") and st.session_state.get("recorded_audio_path"):
+        st.info("Audio recorded. Proceed below to generate summary.")
+        
+        if st.button("Process Recorded Audio", type="primary", use_container_width=True):
+            # Initialize progress
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            status_text.text("Starting audio processing...")
+            
+            # Reset processing progress
+            st.session_state.processing_progress = 0
+            st.session_state.processing_status = "Starting audio processing..."
+            st.session_state.audio_processing_complete = False
+            
+            # Update the UI with progress
+            def update_ui_progress():
+                progress_bar.progress(st.session_state.processing_progress / 100)
+                status_text.text(st.session_state.processing_status)
+            
+            try:
+                audio_path = st.session_state.recorded_audio_path
+                update_ui_progress()
+                
+                if st.session_state.is_long_recording:
+                    # Process long audio with chunking
+                    transcript_data = process_long_audio(
+                        audio_path, 
+                        language=language_code, 
+                        progress_callback=update_progress
+                    )
+                else:
+                    # Process regular audio
+                    with st.spinner(f"Processing {selected_language if language_code else 'auto-detected'} audio..."):
+                        transcript_data = process_audio_file(audio_path, language=language_code)
+                        # Simulate progress for regular processing
+                        for i in range(10):
+                            update_progress(i * 10, f"Processing audio... {i * 10}%")
+                            update_ui_progress()
+                            time.sleep(0.2)
+                
+                # Store the detected language
+                st.session_state.detected_language = transcript_data.get('language', 'auto-detected')
+                
+                # Format the transcript for display and processing
+                formatted_transcript = []
+                for segment in transcript_data["transcript"]:
+                    formatted_transcript.append(f"[{segment['start_time_formatted']}] Speaker {segment['speaker']}: {segment['text']}")
+                
+                # Join the formatted transcript lines
+                full_transcript = "\n".join(formatted_transcript)
+                
+                # Store in session state
+                st.session_state.transcript_content = full_transcript
+                st.session_state.audio_transcript = transcript_data
+                st.session_state.audio_processing_complete = True
+                
+                # Update progress to 100%
+                update_progress(100, "Audio processing complete!")
+                update_ui_progress()
+                
+                if st.session_state.detected_language:
+                    st.success(f"Audio processing complete! Detected language: {st.session_state.detected_language}. The transcript is ready for summarization.")
+                else:
+                    st.success("Audio processing complete! The transcript is ready for summarization.")
+                    
+            except Exception as e:
+                st.error(f"Error processing audio: {str(e)}")
+                st.error(traceback.format_exc())
+                
+            # Remove progress indicators after completion
+            time.sleep(1)
+            progress_bar.empty()
+            status_text.empty()
+    
+    # If audio has been processed, show a preview
+    if st.session_state.audio_processing_complete:
+        with st.expander("Preview Final Transcript", expanded=False):
+            st.text(st.session_state.transcript_content[:1000] + ("..." if len(st.session_state.transcript_content) > 1000 else ""))
+
 elif input_method == "Upload Text":
     text_file = st.file_uploader(
         "Upload Meeting Transcript",
@@ -380,7 +560,7 @@ with st.form("meeting_form"):
             st.success(f"Transcript uploaded! ({len(file_content)} characters)")
         else:
             st.info("Please upload a transcript file above")
-    elif input_method == "Upload Audio":
+    elif input_method in ["Upload Audio", "Real-Time Audio"]:
         if st.session_state.audio_processing_complete:
             st.success(f"Audio processed successfully! {'Language: ' + st.session_state.detected_language if st.session_state.detected_language else ''}")
         else:
@@ -390,7 +570,7 @@ with st.form("meeting_form"):
     default_participants = ""
     if input_method == "Upload Text" and file_content:
         default_participants = ", ".join(extract_participants(file_content))
-    elif input_method == "Upload Audio" and st.session_state.audio_processing_complete:
+    elif input_method in ["Upload Audio", "Real-Time Audio"] and st.session_state.audio_processing_complete:
         speakers = set()
         for segment in st.session_state.audio_transcript["transcript"]:
             speakers.add(f"Speaker {segment['speaker']}")
@@ -444,8 +624,8 @@ if submit_button:
             else:
                 st.warning("Could not detect participants. Please enter them manually.")
                 process_transcript = False
-
-    elif input_method == "Upload Audio" and st.session_state.audio_processing_complete:
+    elif input_method in ["Upload Audio", "Real-Time Audio"] and st.session_state.audio_processing_complete:
+    
         process_transcript = True
         final_transcript = st.session_state.transcript_content
 
@@ -479,7 +659,7 @@ if submit_button:
 
         try:
             # For long recordings, use the hierarchical summarization
-            if st.session_state.is_long_recording and input_method == "Upload Audio":
+            if st.session_state.is_long_recording and input_method in ["Upload Audio", "Real-Time Audio"]:
                 update_status = lambda p, s: update_progress(p, s)
 
                 # Call the long meeting summarizer with transcript data
@@ -494,24 +674,27 @@ if submit_button:
             else:
                 # For regular recordings, use the standard summarizer
                 # Call the meeting summarizer with language information
-                if input_method == "Upload Audio" and st.session_state.detected_language:
+                if input_method in ["Upload Audio", "Real-Time Audio"] and st.session_state.detected_language:
                     # Simulate progress updates for standard processing
                     for i in range(5):
                         update_progress(i * 20, f"Summarizing... {i * 20}%")
                         update_ui_progress()
                         time.sleep(0.3)  # Just for UI feedback
-
-                    result = summarize_meeting(final_transcript, participants,
-                                              language=st.session_state.detected_language)
+                    result = summarize_meeting(
+                        final_transcript, 
+                        participants, 
+                        language=st.session_state.detected_language
+                    )
                 else:
                     # Simulate progress updates for standard processing
                     for i in range(5):
                         update_progress(i * 20, f"Summarizing... {i * 20}%")
                         update_ui_progress()
                         time.sleep(0.3)  # Just for UI feedback
-
-                    result = summarize_meeting(final_transcript, participants)
-
+                    result = summarize_meeting(
+                        final_transcript, 
+                        participants
+                    )
             st.session_state.meeting_result = result
 
             # Update progress to 100%
@@ -525,7 +708,7 @@ if submit_button:
             with st.spinner("Generating speaker-specific summaries..."):
                 try:
                     # Generate speaker summaries with language support
-                    if input_method == "Upload Audio" and st.session_state.detected_language:
+                    if input_method in ["Upload Audio", "Real-Time Audio"] and st.session_state.detected_language:
                         speaker_summaries = generate_speaker_summaries(
                             final_transcript,
                             participants,
@@ -558,7 +741,7 @@ if submit_button:
             )
 
             # If this was from audio, offer the transcript download as well
-            if input_method == "Upload Audio":
+            if input_method in ["Upload Audio", "Real-Time Audio"]:
                 st.download_button(
                     label="Download Transcript (TXT)",
                     data=final_transcript,
