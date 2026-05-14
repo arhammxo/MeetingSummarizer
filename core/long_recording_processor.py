@@ -373,12 +373,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         metrics['total_chunks'] = len(chunks)
         metrics['step_times']['splitting'] = time.time() - step_start
         
-        # --- DEBUGGING LOG ---
-        with open("processing_log.txt", "w") as logf:
-            logf.write(f"Audio split into {len(chunks)} chunks.\n")
-            for c in chunks:
-                logf.write(f"Chunk: {c['path']} | Start: {c['start_time']}s | End: {c['end_time']}s\n")
-        # ---------------------
+
         
         if progress_callback:
             progress_callback(15, f"Split audio into {len(chunks)} chunks")
