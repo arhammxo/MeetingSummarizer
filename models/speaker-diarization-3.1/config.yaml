@@ -7,7 +7,7 @@ pipeline:
     embedding: pyannote/wespeaker-voxceleb-resnet34-LM
     embedding_batch_size: 32
     embedding_exclude_overlap: true
-    segmentation: /home/carnot/Desktop/meeting_summarizer/MeetingSummarizer/models/segmentation-3.0/pytorch_model.bin
+    segmentation: /Users/snazalsingh/Downloads/MeetingSummarizer/models/segmentation-3.0/pytorch_model.bin
     segmentation_batch_size: 32
 
 params:
