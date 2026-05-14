@@ -5,6 +5,7 @@ import re
 import logging
 import json
 from config import settings  # Add settings import
+from core.prompts import CONTEXT_INSTRUCTION
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -187,7 +188,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False, contex
         elif language != "en":
             language_instructions = f"Generate your response in the {language} language."
     
-    context_instruction = f"CRITICAL USER INSTRUCTIONS: {context}\nYou MUST strictly follow these instructions. Ignore any topics the user tells you to ignore, and focus ONLY on the topics the user tells you to focus on.\n" if context else ""
+    context_instruction = CONTEXT_INSTRUCTION.format(context=context) if context else ""
     
     # Simplified prompt
     if not is_final:

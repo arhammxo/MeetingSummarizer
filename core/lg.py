@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, validator
 import logging
 from services.llm_service import get_ollama_llm
 from config import settings
+from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -207,31 +208,13 @@ def merge_analyses(analyses):
 # Define the nodes for our graph
 def create_analyze_node(language=None):
     """Create the analyze node with simplified prompts"""
-    language_instructions = ""
-    if language and language != "en":
-        language_instructions = f"Output in {language} language."
-    
-    system_message = SystemMessage(content=f"""Analyze the meeting transcript and return JSON with this exact structure:
-{{
-  "meeting_purpose": "brief purpose",
-  "main_topics": ["topic1", "topic2", "topic3"],
-  "emotional_tone": "brief tone description",
-  "participation_level": "brief participation description",
-  "disagreement_areas": ["area1", "area2"]
-}}
-
-Rules:
-- Return ONLY valid JSON
-- Keep descriptions brief (under 50 words)
-- List 3-5 main topics
-- List 0-3 disagreement areas
-{language_instructions}""")
+    language_instructions = f"Output in {language} language." if language and language != "en" else ""
+    system_message = SystemMessage(content=ANALYZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Transcript: {transcript}
 Participants: {participants}
 
-CRITICAL USER INSTRUCTIONS: {context}
-You MUST strictly follow these instructions. Ignore any topics the user tells you to ignore, and focus ONLY on the topics the user tells you to focus on."""
+""" + CONTEXT_INSTRUCTION
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript"""
@@ -414,22 +397,13 @@ def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
 def create_summarize_node(language=None):
     """Create the summarize node with simplified prompts"""
     language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    
-    system_message = SystemMessage(content=f"""Create a meeting summary with this JSON structure:
-{{
-  "summary": "2-3 sentence overview",
-  "key_points": ["point1", "point2", "point3"],
-  "decisions": ["decision1", "decision2"]
-}}
-
-Keep it concise and factual. {language_instructions}""")
+    system_message = SystemMessage(content=SUMMARIZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Based on this analysis: {analysis}
 Transcript: {transcript}
 Participants: {participants}
 
-CRITICAL USER INSTRUCTIONS: {context}
-You MUST strictly follow these instructions. Ignore any topics the user tells you to ignore, and focus ONLY on the topics the user tells you to focus on."""
+""" + CONTEXT_INSTRUCTION
     
     def summarize_node(state: AgentState) -> AgentState:
         """Generate a concise summary of the meeting"""
@@ -485,24 +459,12 @@ You MUST strictly follow these instructions. Ignore any topics the user tells yo
 def create_extract_actions_node(language=None):
     """Create the action extraction node with simplified prompts"""
     language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    
-    system_message = SystemMessage(content=f"""Extract action items as JSON array:
-[
-  {{
-    "action": "specific action",
-    "assignee": "person name or Unassigned",
-    "due_date": "date or Not specified",
-    "priority": "high/medium/low"
-  }}
-]
-
-Return empty array [] if no actions found. {language_instructions}""")
+    system_message = SystemMessage(content=EXTRACT_ACTIONS_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Find action items in: {transcript}
 Participants: {participants}
 
-CRITICAL USER INSTRUCTIONS: {context}
-You MUST strictly follow these instructions. If the user tells you to ignore a topic, DO NOT extract any action items related to that topic."""
+""" + CONTEXT_INSTRUCTION
     
     def extract_actions_node(state: AgentState) -> AgentState:
         """Extract action items from the meeting transcript"""
