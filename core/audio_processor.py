@@ -1,9 +1,17 @@
 import whisper
 import torchaudio
+import logging
+
+# Configure logging
+logger = logging.getLogger("audio-processor")
+
 # pyannote expects torchaudio.AudioMetaData; newer torchaudio exposes it only via _torchaudio
 if not hasattr(torchaudio, "AudioMetaData"):  # guard for newer torchaudio versions
-    from torchaudio._torchaudio import AudioMetaData as _AudioMetaData  # type: ignore
-    torchaudio.AudioMetaData = _AudioMetaData  # type: ignore[attr-defined]
+    try:
+        from torchaudio._torchaudio import AudioMetaData as _AudioMetaData  # type: ignore
+        torchaudio.AudioMetaData = _AudioMetaData  # type: ignore[attr-defined]
+    except ImportError:
+        logger.warning("Could not monkey-patch torchaudio.AudioMetaData. Pyannote might encounter issues.")
 from pyannote.audio import Pipeline
 from pyannote.audio.pipelines.utils.hook import ProgressHook
 import torch
@@ -13,14 +21,10 @@ import librosa
 import time
 from datetime import datetime
 import tempfile
-import logging
 from typing import Dict, List, Any, Optional, Callable
 from pydub import AudioSegment
 import soundfile as sf
 from pathlib import Path
-
-# Configure logging
-logger = logging.getLogger("audio-processor")
 
 # Enable for better performance if using CUDA
 if torch.cuda.is_available():
@@ -447,6 +451,10 @@ def format_conversation(diarization_result, transcription_segments):
     """
     conversation_data = []
 
+    # Pyannote 4 returns a DiarizeOutput object, older versions return Annotation directly
+    if hasattr(diarization_result, "speaker_diarization"):
+        diarization_result = diarization_result.speaker_diarization
+        
     # Sort diarization turns and transcription segments by start time
     diarization_turns = sorted(diarization_result.itertracks(yield_label=True), key=lambda x: x[0].start)
     transcription_segments = sorted(transcription_segments, key=lambda x: x["start"])

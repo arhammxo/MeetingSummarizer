@@ -18,10 +18,10 @@ class Settings(BaseSettings):
 
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen2.5:7b"  # Primary local model
-    OLLAMA_SUMMARIZATION_MODEL: str = "qwen2.5:7b"
-    OLLAMA_MULTILINGUAL_MODEL: str = "qwen2.5:7b"
-    OLLAMA_FALLBACK_MODEL: str = "qwen2.5:7b"
+    OLLAMA_MODEL: str = "mistral:latest"  # Using installed model
+    OLLAMA_SUMMARIZATION_MODEL: str = "mistral:latest"
+    OLLAMA_MULTILINGUAL_MODEL: str = "mistral:latest"
+    OLLAMA_FALLBACK_MODEL: str = "mistral:latest"
 
     # Ollama Settings
     OLLAMA_USE_STRUCTURED_OUTPUT: bool = True
