@@ -1,7 +1,7 @@
 # Centralized prompt templates and instructions for the Meeting Summarizer
 
-CONTEXT_INSTRUCTION = """CRITICAL USER INSTRUCTIONS: {context}
-You MUST strictly follow these instructions. Ignore any topics the user tells you to ignore, and focus ONLY on the topics the user tells you to focus on."""
+CONTEXT_INSTRUCTION = """ADDITIONAL MEETING CONTEXT: {context}
+Use this provided information to understand the meeting background better and ensure the summary accurately reflects these specific details or focus areas."""
 
 ANALYZE_SYSTEM_PROMPT = """Analyze the meeting transcript and return JSON with this exact structure:
 {{
