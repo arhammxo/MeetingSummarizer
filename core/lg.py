@@ -9,9 +9,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
 import logging
-from services.llm_service import get_ollama_llm
 from config import settings
 from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
+from services.llm_service import get_ollama_llm, get_llm as get_llm_service
+import langchain_core.output_parsers as langchain_parsers
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -19,16 +20,6 @@ logger = logging.getLogger(__name__)
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
-    Args:
-        text: Text that should contain JSON
-        
-    Returns:
-        Parsed JSON object or a default structure
-    """
-    import json
-    import re
-    import logging
     
     # First, try direct JSON parsing
     try:
@@ -158,7 +149,6 @@ class AgentState(TypedDict):
 # Initialize our LLM
 def get_llm():
     """Get the language model"""
-    from services.llm_service import get_llm as get_llm_service
     return get_llm_service(temperature=0, purpose="summarization")
 
 def merge_analyses(analyses):

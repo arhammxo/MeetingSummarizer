@@ -6,6 +6,7 @@ import logging
 import json
 from config import settings  # Add settings import
 from core.prompts import CONTEXT_INSTRUCTION
+from services.llm_service import get_llm, get_ollama_llm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -14,16 +15,6 @@ logger = logging.getLogger("long_transcript_summarizer")
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
-    Args:
-        text: Text that should contain JSON
-        
-    Returns:
-        Parsed JSON object or a default structure
-    """
-    import json
-    import re
-    import logging
     
     # First, try direct JSON parsing
     try:
@@ -156,17 +147,6 @@ def format_transcript_chunk(chunk):
 def summarize_transcript_chunk(chunk_text, language=None, is_final=False, context=None):
     """
     Summarize a single transcript chunk with structured output
-    
-    Args:
-        chunk_text: Text of the transcript chunk
-        language: Optional language code
-        is_final: Whether this is the final summary (affects prompt)
-        context: Optional prior meeting context
-        
-    Returns:
-        Summary object with structured output
-    """
-    from services.llm_service import get_llm, get_ollama_llm
     
     # Define schema
     chunk_schema = {
