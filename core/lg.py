@@ -1,21 +1,27 @@
 import os
 import json
 import re
+import logging
 from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+import langchain_core.output_parsers as langchain_parsers
 from pydantic import BaseModel, Field, validator
-import logging
 from config import settings
 from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
 from services.llm_service import get_ollama_llm, get_llm as get_llm_service
-import langchain_core.output_parsers as langchain_parsers
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
+
+def get_context_instruction(context: Optional[str]) -> str:
+    """Generate the meeting context instruction for the prompt"""
+    if not context or context == "None provided.":
+        return ""
+    
+    return f"\nMEETING CONTEXT AND BACKGROUND: {context}\nPlease use this information to better understand the discussion, identify key topics, and provide a more accurate analysis.\n"
 
 def robust_json_parse(text):
     """
@@ -202,9 +208,7 @@ def create_analyze_node(language=None):
     system_message = SystemMessage(content=ANALYZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Transcript: {transcript}
-Participants: {participants}
-
-""" + CONTEXT_INSTRUCTION
+Participants: {participants}"""
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript"""
@@ -230,9 +234,8 @@ Participants: {participants}
                     system_message,
                     HumanMessage(content=user_template.format(
                         transcript=transcript,
-                        participants=", ".join(participants),
-                        context=state.get("context", "None provided.")
-                    ))
+                        participants=", ".join(participants)
+                    ) + get_context_instruction(state.get("context")))
                 ])
                 
                 # Try structured output first for Ollama
@@ -275,9 +278,8 @@ Participants: {participants}
                     SystemMessage(content=f"Analyze chunk {i+1} of {len(chunks)}. {system_message.content}"),
                     HumanMessage(content=user_template.format(
                         transcript=chunk,
-                        participants=", ".join(participants),
-                        context=state.get("context", "None provided.")
-                    ))
+                        participants=", ".join(participants)
+                    ) + get_context_instruction(state.get("context")))
                 ])
                 
                 try:
@@ -337,13 +339,6 @@ Participants: {participants}
 def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
     """
     Split a long transcript into manageable chunks to avoid context window limitations
-    
-    Args:
-        transcript: The full transcript text
-        max_chunk_size: Maximum size per chunk in characters
-        
-    Returns:
-        List of transcript chunks
     """
     if len(transcript) <= max_chunk_size:
         return [transcript]
@@ -391,9 +386,7 @@ def create_summarize_node(language=None):
     
     user_template = """Based on this analysis: {analysis}
 Transcript: {transcript}
-Participants: {participants}
-
-""" + CONTEXT_INSTRUCTION
+Participants: {participants}"""
     
     def summarize_node(state: AgentState) -> AgentState:
         """Generate a concise summary of the meeting"""
@@ -413,9 +406,8 @@ Participants: {participants}
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
                     analysis=json.dumps(state["analysis"]),
-                    participants=", ".join(state["participants"]),
-                    context=state.get("context", "None provided.")
-                ))
+                    participants=", ".join(state["participants"])
+                ) + get_context_instruction(state.get("context")))
             ])
             
             if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
@@ -452,9 +444,7 @@ def create_extract_actions_node(language=None):
     system_message = SystemMessage(content=EXTRACT_ACTIONS_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Find action items in: {transcript}
-Participants: {participants}
-
-""" + CONTEXT_INSTRUCTION
+Participants: {participants}"""
     
     def extract_actions_node(state: AgentState) -> AgentState:
         """Extract action items from the meeting transcript"""
@@ -477,9 +467,8 @@ Participants: {participants}
                 system_message,
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
-                    participants=", ".join(state["participants"]),
-                    context=state.get("context", "None provided.")
-                ))
+                    participants=", ".join(state["participants"])
+                ) + get_context_instruction(state.get("context")))
             ])
             
             if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:

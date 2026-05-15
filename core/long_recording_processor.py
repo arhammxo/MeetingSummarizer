@@ -11,7 +11,10 @@ import tempfile
 import soundfile as sf
 from pydub import AudioSegment
 import logging
+from pathlib import Path
+from pyannote.core import Annotation, Segment
 from services.audio_service import process_audio_file
+from services.audio_converter import needs_conversion, convert_audio_to_wav
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -203,11 +206,8 @@ def diarize_audio_chunk(chunk_path, offset_seconds=0):
     with ProgressHook() as hook:
         diarization_result = diarization_pipeline(chunk_path, hook=hook)
     
-    # We need to adjust the timestamps in the diarization result
-    from pyannote.core import Annotation, Segment
-    adjusted_result = Annotation()
-    
     # Pyannote 4 returns a DiarizeOutput object, older versions return Annotation directly
+    adjusted_result = Annotation()
     source_annotation = diarization_result.speaker_diarization if hasattr(diarization_result, 'speaker_diarization') else diarization_result
     
     for turn, track, speaker in source_annotation.itertracks(yield_label=True):
@@ -350,9 +350,6 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
     
     try:
         # Check if file is MP3 and convert if needed
-        from pathlib import Path
-        from services.audio_converter import needs_conversion, convert_audio_to_wav
-        
         original_file = audio_file_path
         if needs_conversion(audio_file_path):
             if progress_callback:
@@ -370,8 +367,6 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             progress_callback(10, f"Splitting audio into chunks")
             
         chunks = split_audio(audio_file_path, chunk_duration=chunk_duration)
-        metrics['total_chunks'] = len(chunks)
-        metrics['step_times']['splitting'] = time.time() - step_start
         
 
         
@@ -417,13 +412,6 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             chunk_transcription = transcribe_audio_chunk(chunk_path, offset, language)
             all_transcription_segments.extend(chunk_transcription)
             
-            # --- DEBUGGING LOG ---
-            with open("processing_log.txt", "a") as logf:
-                logf.write(f"\n--- Chunk {i+1} Transcription ---\n")
-                logf.write(f"Found {len(chunk_transcription)} transcribed segments.\n")
-                for s in chunk_transcription[:3]: # Log first 3 segments
-                    logf.write(f"Seg [{s.get('start')} - {s.get('end')}]: {s.get('text')}\n")
-            # ---------------------
             
             # If first chunk, store detected language
             if i == 0 and not language and chunk_transcription:
@@ -453,12 +441,6 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         merged_diarization_turns = merge_diarization_results(all_diarization_results)
         metrics['step_times']['merging'] = time.time() - step_start
         
-        # --- DEBUGGING LOG ---
-        with open("processing_log.txt", "a") as logf:
-            logf.write(f"\n--- Diarization Merge ---\n")
-            logf.write(f"Found {len(merged_diarization_turns)} unique speaker turns across all chunks.\n")
-            logf.write(f"Total transcribed segments before formatting: {len(all_transcription_segments)}\n")
-        # ---------------------
         
         if progress_callback:
             progress_callback(90, "Formatting conversation")

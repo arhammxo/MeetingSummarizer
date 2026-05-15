@@ -168,7 +168,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False, contex
         elif language != "en":
             language_instructions = f"Generate your response in the {language} language."
     
-    context_instruction = CONTEXT_INSTRUCTION.format(context=context) if context else ""
+    context_instruction = f"\nMEETING CONTEXT AND BACKGROUND: {context}\nPlease use this information to better understand the discussion, identify key topics, and provide a more accurate analysis.\n" if context else ""
     
     # Simplified prompt
     if not is_final:
@@ -231,8 +231,6 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False, contex
         logger.warning(f"Error in structured output: {e}. Attempting recovery...")
         
         try:
-            # Fallback to string output and manual parsing
-            from langchain_core.output_parsers import StrOutputParser
             str_chain = prompt | llm | StrOutputParser()
             raw_response = str_chain.invoke({})
             

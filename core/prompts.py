@@ -1,7 +1,7 @@
 # Centralized prompt templates and instructions for the Meeting Summarizer
 
-CONTEXT_INSTRUCTION = """ADDITIONAL MEETING CONTEXT: {context}
-Use this provided information to understand the meeting background better and ensure the summary accurately reflects these specific details or focus areas."""
+CONTEXT_INSTRUCTION = """MEETING CONTEXT AND BACKGROUND: {context}
+Please use this information to better understand the discussion, identify key topics, and provide a more accurate analysis."""
 
 ANALYZE_SYSTEM_PROMPT = """Analyze the meeting transcript and return JSON with this exact structure:
 {{

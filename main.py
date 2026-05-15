@@ -10,7 +10,13 @@ import os
 import tempfile
 import json
 import logging
+import re
 from datetime import datetime
+from typing import List, Dict, Optional, Any, Union
+
+# Third-party imports
+from pydub import AudioSegment
+from langdetect import detect
 
 # Import configuration
 from config import settings, get_settings
@@ -20,7 +26,9 @@ from services.audio_service import process_audio_file, process_long_audio
 from services.text_service import extract_participants
 from services.summarization_service import summarize_meeting, summarize_long_meeting, generate_speaker_summaries
 from services.job_service import JobStatus, get_job_status, update_job_status, save_job_result
-from services.utils import format_time
+from services.utils import format_time, get_language_name
+from services.audio_converter import needs_conversion, convert_audio_to_wav
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()),
@@ -168,8 +176,6 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
         update_job_status(job_id, JobStatus.PROCESSING, "Processing audio file")
         
         # First, check if this is an MP3 file and convert if needed
-        from pathlib import Path
-        from services.audio_converter import needs_conversion, convert_audio_to_wav
         
         if needs_conversion(audio_path):
             # Update status to show we're converting
@@ -193,7 +199,6 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
         # For very short files, always use standard processing regardless of is_long_recording flag
         is_short_audio = False
         try:
-            from pydub import AudioSegment
             audio = AudioSegment.from_file(audio_path_to_process)
             duration_seconds = len(audio) / 1000
             logger.info(f"Audio duration: {duration_seconds} seconds")
@@ -393,7 +398,6 @@ async def summarize_background(
             # Optionally try to detect language from transcript content
             # This is a fallback if the audio processing didn't provide a proper language code
             try:
-                from langdetect import detect
                 detected_lang = detect(transcript[:1000])  # Use first 1000 chars
                 logger.info(f"Detected language from transcript text: {detected_lang}")
                 language = detected_lang
@@ -436,7 +440,6 @@ async def summarize_background(
         speaker_summaries = generate_speaker_summaries(transcript, participants, language=language)
         
         # Get the language name for display
-        from services.utils import get_language_name
         language_name = get_language_name(language)
         
         # Get speaker confidence metrics from the result if available
@@ -491,7 +494,6 @@ def parse_transcript_to_segments(transcript_text):
             # Check if there's a speaker number in the speaker part
             speaker_match = None
             if "Speaker" in speaker_part:
-                import re
                 speaker_match = re.search(r'Speaker\s+(\d+)', speaker_part)
             
             speaker = speaker_match.group(1) if speaker_match else "1"

@@ -1,6 +1,25 @@
 import whisper
 import torchaudio
 import logging
+import torch
+import os
+import numpy as np
+import librosa
+import time
+import tempfile
+import soundfile as sf
+from datetime import datetime
+from typing import Dict, List, Any, Optional, Callable
+from pydub import AudioSegment
+from pathlib import Path
+
+# Pyannote imports
+from pyannote.audio import Pipeline
+from pyannote.audio.pipelines.utils.hook import ProgressHook
+from pyannote.core import Segment, Timeline, Annotation
+
+# Project imports
+from services.audio_converter import needs_conversion, convert_audio_to_wav
 
 # Configure logging
 logger = logging.getLogger("audio-processor")
@@ -12,19 +31,6 @@ if not hasattr(torchaudio, "AudioMetaData"):  # guard for newer torchaudio versi
         torchaudio.AudioMetaData = _AudioMetaData  # type: ignore[attr-defined]
     except ImportError:
         logger.warning("Could not monkey-patch torchaudio.AudioMetaData. Pyannote might encounter issues.")
-from pyannote.audio import Pipeline
-from pyannote.audio.pipelines.utils.hook import ProgressHook
-import torch
-import os
-import numpy as np
-import librosa
-import time
-from datetime import datetime
-import tempfile
-from typing import Dict, List, Any, Optional, Callable
-from pydub import AudioSegment
-import soundfile as sf
-from pathlib import Path
 
 # Enable for better performance if using CUDA
 if torch.cuda.is_available():
@@ -260,8 +266,6 @@ def diarize_audio(audio_file: str) -> Any:
     Returns:
         Diarization result
     """
-    from services.audio_converter import needs_conversion, convert_audio_to_wav
-    
     logger.info(f"Starting diarization for file: {audio_file}")
 
     # Track if we create a temporary file that needs cleanup
@@ -298,9 +302,6 @@ def diarize_audio(audio_file: str) -> Any:
 
     except Exception as e:
         logger.error(f"Diarization error: {str(e)}")
-
-        # Fall back to simpler diarization approach
-        from pyannote.core import Segment, Annotation
 
         logger.warning("Creating fallback diarization result")
         annotation = Annotation()
@@ -341,9 +342,6 @@ def create_fallback_diarization(audio_file: str) -> Any:
     logger.warning(f"Creating fallback diarization for {audio_file}")
 
     try:
-        # Import pyannote core for annotation objects
-        from pyannote.core import Segment, Annotation
-
         # Create a simple annotation with just one speaker if we can't process properly
         annotation = Annotation()
 
@@ -366,7 +364,6 @@ def create_fallback_diarization(audio_file: str) -> Any:
         logger.error(f"Fallback diarization failed: {str(e)}")
 
         # If all else fails, create an extremely minimal annotation
-        from pyannote.core import Segment, Annotation
         annotation = Annotation()
         segment = Segment(0, 300)  # Assume 5 minutes
         annotation[segment] = "SPEAKER_00"
@@ -395,8 +392,6 @@ def fallback_diarization(audio_file: str) -> Any:
 
         # Create a mock diarization result
         # This is a simplified version that mimics pyannote.audio's format
-        from pyannote.core import Segment, Timeline, Annotation
-
         # Create an annotation to hold our segments
         annotation = Annotation()
 
@@ -424,8 +419,6 @@ def fallback_diarization(audio_file: str) -> Any:
         logger.error(f"Fallback diarization failed: {str(e)}")
 
         # Create an extremely simple mock result with just one speaker
-        from pyannote.core import Segment, Annotation
-
         annotation = Annotation()
 
         # Just create one segment for the entire audio
@@ -546,9 +539,6 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
 
     try:
         start_total = time.time()
-        # Ensure audio is in WAV format before passing to Whisper/Librosa
-        from services.audio_converter import needs_conversion, convert_audio_to_wav
-        
         original_file_path = audio_file_path
         if needs_conversion(audio_file_path):
             logger.info(f"Converting audio to WAV format before processing: {audio_file_path}")

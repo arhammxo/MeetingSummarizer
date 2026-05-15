@@ -6,13 +6,15 @@ import os
 import wave
 import numpy as np
 import logging
+import whisper
+import torch
 
 try:
     import sounddevice as sd
 except ImportError:
     sd = None
 
-import whisper
+
 
 logger = logging.getLogger("realtime-processor")
 
@@ -88,7 +90,6 @@ class RealTimeTranscriber:
 
     def _transcribe_loop(self):
         # We need torch to check if CUDA is available for the FP16 warning
-        import torch
         fp16_supported = torch.cuda.is_available()
         
         while self.is_recording or not self.audio_queue.empty():
