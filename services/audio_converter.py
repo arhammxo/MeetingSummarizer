@@ -70,17 +70,17 @@ def convert_audio_to_wav(input_path: str, output_path: str = None, sample_rate: 
                 
         raise RuntimeError(error_message)
 
-def is_mp3_file(file_path: str) -> bool:
+def needs_conversion(file_path: str) -> bool:
     """
-    Check if a file is an MP3 file based on extension.
+    Check if a file needs to be converted to WAV based on extension.
     
     Args:
         file_path (str): Path to the file
         
     Returns:
-        bool: True if file has .mp3 extension
+        bool: True if file has an extension that requires conversion
     """
-    return Path(file_path).suffix.lower() == '.mp3'
+    return Path(file_path).suffix.lower() in ['.mp3', '.m4a', '.webm', '.ogg', '.flac']
 
 def process_audio_file_for_diarization(file_path: str) -> str:
     """
@@ -92,8 +92,8 @@ def process_audio_file_for_diarization(file_path: str) -> str:
     Returns:
         str: Path to the processed file (original or converted)
     """
-    if is_mp3_file(file_path):
-        logger.info(f"Processing MP3 file for diarization: {file_path}")
+    if needs_conversion(file_path):
+        logger.info(f"Converting audio file for diarization: {file_path}")
         return convert_audio_to_wav(file_path)
     else:
         # For non-MP3 files, just return the original path

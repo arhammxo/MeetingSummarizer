@@ -1,4 +1,3 @@
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
@@ -6,6 +5,8 @@ import re
 import logging
 import json
 from config import settings  # Add settings import
+from core.prompts import CONTEXT_INSTRUCTION
+from services.llm_service import get_llm, get_ollama_llm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -14,16 +15,6 @@ logger = logging.getLogger("long_transcript_summarizer")
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
-    Args:
-        text: Text that should contain JSON
-        
-    Returns:
-        Parsed JSON object or a default structure
-    """
-    import json
-    import re
-    import logging
     
     # First, try direct JSON parsing
     try:
@@ -153,19 +144,9 @@ def format_transcript_chunk(chunk):
         formatted_text.append(f"Speaker {segment['speaker']}: {segment['text']}")
     return "\n".join(formatted_text)
 
-def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
+def summarize_transcript_chunk(chunk_text, language=None, is_final=False, context=None):
     """
     Summarize a single transcript chunk with structured output
-    
-    Args:
-        chunk_text: Text of the transcript chunk
-        language: Optional language code
-        is_final: Whether this is the final summary (affects prompt)
-        
-    Returns:
-        Summary object with structured output
-    """
-    from services.llm_service import get_llm, get_ollama_llm
     
     # Define schema
     chunk_schema = {
@@ -187,6 +168,8 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         elif language != "en":
             language_instructions = f"Generate your response in the {language} language."
     
+    context_instruction = f"\nMEETING CONTEXT AND BACKGROUND: {context}\nPlease use this information to better understand the discussion, identify key topics, and provide a more accurate analysis.\n" if context else ""
+    
     # Simplified prompt
     if not is_final:
         system_content = f"""Summarize this meeting chunk as JSON:
@@ -197,6 +180,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
   "action_items": [{{"action": "task", "assignee": "person"}}]
 }}
 
+{context_instruction}
 {language_instructions}"""
     else:
         system_content = f"""Combine these summaries into final JSON:
@@ -207,6 +191,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
   "action_items": [{{"action": "task", "assignee": "person", "due_date": "date"}}]
 }}
 
+{context_instruction}
 {language_instructions}"""
     
     # Create messages
@@ -237,7 +222,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
             return result
         else:
             # Regular approach with JSON parser
-            llm = ChatOpenAI(model="gpt-4", temperature=0)
+            llm = get_llm(temperature=0, purpose="summarization")
             chain = prompt | llm | JsonOutputParser()  # No schema parameter!
             result = chain.invoke({})
             return result
@@ -246,8 +231,6 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
         logger.warning(f"Error in structured output: {e}. Attempting recovery...")
         
         try:
-            # Fallback to string output and manual parsing
-            from langchain_core.output_parsers import StrOutputParser
             str_chain = prompt | llm | StrOutputParser()
             raw_response = str_chain.invoke({})
             
@@ -266,7 +249,7 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False):
                 "action_items": []
             }
 
-def hierarchical_summarize(transcript_data, language=None, progress_callback=None):
+def hierarchical_summarize(transcript_data, language=None, progress_callback=None, context=None):
     """
     Summarize a long transcript using hierarchical summarization
     
@@ -274,6 +257,7 @@ def hierarchical_summarize(transcript_data, language=None, progress_callback=Non
         transcript_data: List of transcript segments with timestamps
         language: Optional language code
         progress_callback: Optional callback function for progress updates
+        context: Optional prior meeting context
         
     Returns:
         Final summary object
@@ -294,7 +278,7 @@ def hierarchical_summarize(transcript_data, language=None, progress_callback=Non
                 progress_callback(progress_percentage, f"Summarizing chunk {i+1}/{len(transcript_chunks)}")
             
             chunk_text = format_transcript_chunk(chunk)
-            chunk_summary = summarize_transcript_chunk(chunk_text, language)
+            chunk_summary = summarize_transcript_chunk(chunk_text, language, context=context)
             
             # Add time range to the summary
             chunk_summary["time_range"] = {
@@ -339,7 +323,7 @@ def hierarchical_summarize(transcript_data, language=None, progress_callback=Non
             combined_text += "\n"
         
         # Step 4: Create final summary
-        final_summary = summarize_transcript_chunk(combined_text, language, is_final=True)
+        final_summary = summarize_transcript_chunk(combined_text, language, is_final=True, context=context)
         
         # Step 5: Add metadata
         final_summary["metadata"] = {
@@ -372,7 +356,7 @@ def extract_speakers_from_transcript(transcript_data):
         speakers.add(segment['speaker'])
     return sorted(list(speakers))
 
-def summarize_long_meeting(transcript_data, language=None, progress_callback=None):
+def summarize_long_meeting(transcript_data, language=None, progress_callback=None, context=None):
     """
     Main function to summarize a long meeting transcript
     
@@ -380,6 +364,7 @@ def summarize_long_meeting(transcript_data, language=None, progress_callback=Non
         transcript_data: List of transcript segments with speaker IDs and text
         language: Optional language code
         progress_callback: Optional callback function for progress updates
+        context: Optional prior meeting context
         
     Returns:
         Dictionary with summary and action items
@@ -391,7 +376,7 @@ def summarize_long_meeting(transcript_data, language=None, progress_callback=Non
     speakers = extract_speakers_from_transcript(transcript_data)
     
     # Generate hierarchical summary
-    summary_result = hierarchical_summarize(transcript_data, language, progress_callback)
+    summary_result = hierarchical_summarize(transcript_data, language, progress_callback, context)
     
     # Format the result in the expected structure for our application
     meeting_summary = {

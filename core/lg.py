@@ -1,33 +1,31 @@
 import os
 import json
 import re
+import logging
 from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+import langchain_core.output_parsers as langchain_parsers
 from pydantic import BaseModel, Field, validator
-import logging
-from services.llm_service import get_ollama_llm
 from config import settings
+from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
+from services.llm_service import get_ollama_llm, get_llm as get_llm_service
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
 
+def get_context_instruction(context: Optional[str]) -> str:
+    """Generate the meeting context instruction for the prompt"""
+    if not context or context == "None provided.":
+        return ""
+    
+    return f"\nMEETING CONTEXT AND BACKGROUND: {context}\nPlease use this information to better understand the discussion, identify key topics, and provide a more accurate analysis.\n"
+
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
-    Args:
-        text: Text that should contain JSON
-        
-    Returns:
-        Parsed JSON object or a default structure
-    """
-    import json
-    import re
-    import logging
     
     # First, try direct JSON parsing
     try:
@@ -147,6 +145,7 @@ class AgentState(TypedDict):
     transcript: str
     participants: List[str]
     language: Optional[str]
+    context: Optional[str]
     current_step: Literal["initialization", "analyze", "summarize", "extract_actions", "format_output", "complete"]
     analysis: Dict
     meeting_summary: MeetingSummary
@@ -156,7 +155,6 @@ class AgentState(TypedDict):
 # Initialize our LLM
 def get_llm():
     """Get the language model"""
-    from services.llm_service import get_llm as get_llm_service
     return get_llm_service(temperature=0, purpose="summarization")
 
 def merge_analyses(analyses):
@@ -206,25 +204,8 @@ def merge_analyses(analyses):
 # Define the nodes for our graph
 def create_analyze_node(language=None):
     """Create the analyze node with simplified prompts"""
-    language_instructions = ""
-    if language and language != "en":
-        language_instructions = f"Output in {language} language."
-    
-    system_message = SystemMessage(content=f"""Analyze the meeting transcript and return JSON with this exact structure:
-{{
-  "meeting_purpose": "brief purpose",
-  "main_topics": ["topic1", "topic2", "topic3"],
-  "emotional_tone": "brief tone description",
-  "participation_level": "brief participation description",
-  "disagreement_areas": ["area1", "area2"]
-}}
-
-Rules:
-- Return ONLY valid JSON
-- Keep descriptions brief (under 50 words)
-- List 3-5 main topics
-- List 0-3 disagreement areas
-{language_instructions}""")
+    language_instructions = f"Output in {language} language." if language and language != "en" else ""
+    system_message = SystemMessage(content=ANALYZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Transcript: {transcript}
 Participants: {participants}"""
@@ -254,7 +235,7 @@ Participants: {participants}"""
                     HumanMessage(content=user_template.format(
                         transcript=transcript,
                         participants=", ".join(participants)
-                    ))
+                    ) + get_context_instruction(state.get("context")))
                 ])
                 
                 # Try structured output first for Ollama
@@ -298,7 +279,7 @@ Participants: {participants}"""
                     HumanMessage(content=user_template.format(
                         transcript=chunk,
                         participants=", ".join(participants)
-                    ))
+                    ) + get_context_instruction(state.get("context")))
                 ])
                 
                 try:
@@ -358,13 +339,6 @@ Participants: {participants}"""
 def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
     """
     Split a long transcript into manageable chunks to avoid context window limitations
-    
-    Args:
-        transcript: The full transcript text
-        max_chunk_size: Maximum size per chunk in characters
-        
-    Returns:
-        List of transcript chunks
     """
     if len(transcript) <= max_chunk_size:
         return [transcript]
@@ -408,15 +382,7 @@ def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
 def create_summarize_node(language=None):
     """Create the summarize node with simplified prompts"""
     language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    
-    system_message = SystemMessage(content=f"""Create a meeting summary with this JSON structure:
-{{
-  "summary": "2-3 sentence overview",
-  "key_points": ["point1", "point2", "point3"],
-  "decisions": ["decision1", "decision2"]
-}}
-
-Keep it concise and factual. {language_instructions}""")
+    system_message = SystemMessage(content=SUMMARIZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Based on this analysis: {analysis}
 Transcript: {transcript}
@@ -441,7 +407,7 @@ Participants: {participants}"""
                     transcript=state["transcript"][:5000],
                     analysis=json.dumps(state["analysis"]),
                     participants=", ".join(state["participants"])
-                ))
+                ) + get_context_instruction(state.get("context")))
             ])
             
             if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
@@ -475,18 +441,7 @@ Participants: {participants}"""
 def create_extract_actions_node(language=None):
     """Create the action extraction node with simplified prompts"""
     language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    
-    system_message = SystemMessage(content=f"""Extract action items as JSON array:
-[
-  {{
-    "action": "specific action",
-    "assignee": "person name or Unassigned",
-    "due_date": "date or Not specified",
-    "priority": "high/medium/low"
-  }}
-]
-
-Return empty array [] if no actions found. {language_instructions}""")
+    system_message = SystemMessage(content=EXTRACT_ACTIONS_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Find action items in: {transcript}
 Participants: {participants}"""
@@ -513,7 +468,7 @@ Participants: {participants}"""
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
                     participants=", ".join(state["participants"])
-                ))
+                ) + get_context_instruction(state.get("context")))
             ])
             
             if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
@@ -635,7 +590,7 @@ def create_meeting_summarizer_graph(language=None):
     return workflow.compile()
 
 # Main function to run the meeting summarizer
-def summarize_meeting(transcript: str, participants: List[str], language: str = None, additional_context: str = None):
+def summarize_meeting(transcript: str, participants: List[str], language: str = None, context: str = None):
     """Run the meeting summarizer on a transcript and return the summary and action items."""
     # Check for empty inputs
     if not transcript or not transcript.strip():
@@ -656,7 +611,7 @@ def summarize_meeting(transcript: str, participants: List[str], language: str = 
             "transcript": transcript,
             "participants": participants,
             "language": language,
-            "additional_context": additional_context,  # Add additional context
+            "context": context,
             "current_step": "initialization",
             "analysis": {},
             "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),

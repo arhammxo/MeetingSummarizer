@@ -5,6 +5,13 @@ import json
 import logging
 import time
 from pathlib import Path
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+
+# Langchain and project imports
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser, get_ollama_llm
+from config import settings
 
 # Configure logging
 logger = logging.getLogger("summarization-service")
@@ -20,6 +27,7 @@ try:
     from core.speaker_summarizer import generate_speaker_summaries as ss_generate_speaker_summaries
     from core.summarize_long_transcripts import summarize_long_meeting as slt_summarize_long_meeting
     logger.info("Successfully imported core summarization modules")
+    HAS_CORE = True
     
     # Import the multilingual summarizer module
     try:
@@ -44,6 +52,7 @@ except ImportError as e:
     logger.error(f"Error importing core modules: {str(e)}")
     logger.warning("Using mock implementations as fallback")
     HAS_MULTILINGUAL = False
+    HAS_CORE = False
     
     # Mock implementations for fallback
     def lg_summarize_meeting(transcript, participants, language=None):
@@ -102,10 +111,6 @@ except ImportError as e:
             }
         }
 
-# Custom implementation of multilingual speaker summaries
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
 
 def generate_speaker_summaries_multilingual(transcript, participants, language):
     """
@@ -127,10 +132,6 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
         # Get proper language name for instructions
         language_name = get_language_name(language)
         
-        # Use the LLM service factory instead of directly creating a ChatOpenAI instance
-        # This respects the configured LLM provider (Ollama or OpenAI)
-        from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser, get_ollama_llm
-        from config import settings
         
         # Initialize the LLM with increased temperature for better multilingual generation
         llm = get_llm(temperature=0.2, purpose="multilingual")
@@ -190,8 +191,6 @@ def generate_speaker_summaries_multilingual(transcript, participants, language):
             if speaker_lines:
                 speaker_contributions[participant] = '\n'.join(speaker_lines)
         
-        # Add robust error handling and fallbacks
-        from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
         
         # Create a retry wrapper for API call failures
         @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), 
@@ -468,14 +467,7 @@ def summarize_long_meeting(
 # Function to verify if the real implementations are available
 def check_summarizer_availability():
     """Check if the real summarizer implementations are available"""
-    try:
-        # Try importing one of the core functions directly
-        from core.lg import summarize_meeting
-        # If it works, return True
-        return True
-    except ImportError:
-        # If importing fails, return False
-        return False
+    return HAS_CORE
 
 # Report availability status
 REAL_SUMMARIZERS_AVAILABLE = check_summarizer_availability()

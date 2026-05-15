@@ -11,7 +11,10 @@ import tempfile
 import soundfile as sf
 from pydub import AudioSegment
 import logging
+from pathlib import Path
+from pyannote.core import Annotation, Segment
 from services.audio_service import process_audio_file
+from services.audio_converter import needs_conversion, convert_audio_to_wav
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -139,17 +142,23 @@ def transcribe_audio_chunk(chunk_path, offset_seconds=0, language=None):
     # Load audio
     audio = librosa.load(chunk_path, sr=16000)[0]
     
+    # Use robust transcription options to prevent early stopping/hallucinations
+    transcribe_options = {
+        "word_timestamps": True,
+        "suppress_tokens": [-1],
+        "without_timestamps": False,
+        "max_initial_timestamp": None,
+        "fp16": torch.cuda.is_available(),
+        "condition_on_previous_text": False
+    }
+    
     # Transcribe with language specification if provided
     if language:
-        result = model.transcribe(audio, language=language)
+        result = model.transcribe(audio, language=language, **transcribe_options)
     else:
-        # First, detect the language from a sample
-        audio_sample = audio[:48000]  # Use a short sample for detection
-        detection_result = model.detect_language(audio_sample)
-        detected_language = detection_result[0]
-        
-        # Then transcribe with the detected language
-        result = model.transcribe(audio, language=detected_language)
+        # Let Whisper automatically detect the language
+        result = model.transcribe(audio, **transcribe_options)
+        detected_language = result.get("language")
         logger.info(f"Detected language: {detected_language}")
     
     # Adjust timestamps and add confidence information
@@ -189,7 +198,7 @@ def diarize_audio_chunk(chunk_path, offset_seconds=0):
     
     diarization_pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token)
+        token=hf_token)
     
     # Use GPU if available
     diarization_pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
@@ -197,9 +206,14 @@ def diarize_audio_chunk(chunk_path, offset_seconds=0):
     with ProgressHook() as hook:
         diarization_result = diarization_pipeline(chunk_path, hook=hook)
     
-    # We need to adjust the timestamps in the diarization result
-    adjusted_result = diarization_result.shift(offset_seconds)
+    # Pyannote 4 returns a DiarizeOutput object, older versions return Annotation directly
+    adjusted_result = Annotation()
+    source_annotation = diarization_result.speaker_diarization if hasattr(diarization_result, 'speaker_diarization') else diarization_result
     
+    for turn, track, speaker in source_annotation.itertracks(yield_label=True):
+        shifted_turn = Segment(turn.start + offset_seconds, turn.end + offset_seconds)
+        adjusted_result[shifted_turn, track] = speaker
+        
     return adjusted_result
 
 def merge_diarization_results(diarization_results):
@@ -336,16 +350,13 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
     
     try:
         # Check if file is MP3 and convert if needed
-        from pathlib import Path
-        from services.audio_converter import is_mp3_file, convert_audio_to_wav
-        
         original_file = audio_file_path
-        if is_mp3_file(audio_file_path):
+        if needs_conversion(audio_file_path):
             if progress_callback:
-                progress_callback(5, f"Converting MP3 to WAV format")
+                progress_callback(5, f"Converting audio to WAV format")
             try:
                 audio_file_path = convert_audio_to_wav(audio_file_path)
-                logger.info(f"Converted MP3 to WAV: {audio_file_path}")
+                logger.info(f"Converted audio to WAV: {audio_file_path}")
             except Exception as e:
                 logger.error(f"Error converting MP3: {str(e)}")
                 # Continue with original file
@@ -356,8 +367,8 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             progress_callback(10, f"Splitting audio into chunks")
             
         chunks = split_audio(audio_file_path, chunk_duration=chunk_duration)
-        metrics['total_chunks'] = len(chunks)
-        metrics['step_times']['splitting'] = time.time() - step_start
+        
+
         
         if progress_callback:
             progress_callback(15, f"Split audio into {len(chunks)} chunks")
@@ -401,6 +412,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             chunk_transcription = transcribe_audio_chunk(chunk_path, offset, language)
             all_transcription_segments.extend(chunk_transcription)
             
+            
             # If first chunk, store detected language
             if i == 0 and not language and chunk_transcription:
                 try:
@@ -428,6 +440,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         step_start = time.time()
         merged_diarization_turns = merge_diarization_results(all_diarization_results)
         metrics['step_times']['merging'] = time.time() - step_start
+        
         
         if progress_callback:
             progress_callback(90, "Formatting conversation")

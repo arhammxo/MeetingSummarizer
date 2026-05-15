@@ -1,120 +1,118 @@
-# Meeting Summarizer and Action List Generator
+# Meeting Summarizer (100% Local AI Pipeline)
 
-This project uses LangGraph to create an AI agent that automatically summarizes meeting transcripts and generates action item lists.
+A robust, fully on-premise AI pipeline that transcribes audio, identifies distinct speakers (diarization), and generates concise summaries and actionable items using entirely local models. No cloud APIs, no data leaving your machine!
 
-## Overview
+## Core Architecture
 
-The Meeting Summarizer and Action List Generator is designed to:
+The application is built on a 4-stage pipeline that ensures maximum privacy and capability:
 
-1. **Analyze meeting transcripts** to understand context and participants
-2. **Generate concise summaries** of what was discussed
-3. **Extract action items** with assignees and deadlines
-4. **Format everything** into a clean, shareable report
+1. **Audio Pre-processing (`services/audio_converter.py`)**
+   - Automatically detects formats (WAV, MP3, M4A, WEBM, OGG, FLAC).
+   - Uses `ffmpeg` to standardize everything to `16kHz Mono WAV` format, which is strictly required by the downstream AI models.
 
-## Project Structure
+2. **Transcription (`core/audio_processor.py`)**
+   - **Model:** Local OpenAI Whisper (`medium` model).
+   - Converts raw audio waveforms into text with word-level timestamps and confidence scores.
 
-- `meeting_summarizer.py`: Core agent implementation using LangGraph
-- `app.py`: Streamlit web application for using the meeting summarizer
-- `requirements.txt`: Dependencies needed to run the project
+3. **Speaker Diarization (`core/audio_processor.py`)**
+   - **Model:** Pyannote Audio (`pyannote/speaker-diarization-3.1`).
+   - Analyzes acoustic voice fingerprints (pitch, resonance) to detect *who* is speaking *when*. It groups the voice segments and labels them (e.g., Speaker 0, Speaker 1) without needing facial recognition.
+   - The timelines from Whisper and Pyannote are merged to create a perfectly aligned transcript.
 
-## How It Works
+4. **Summarization & Action Extraction (`core/lg.py`)**
+   - **Model:** Mistral (via local Ollama).
+   - **Orchestration:** LangGraph state machine.
+   - The LLM reads the beautifully formatted transcript (`[00:01:23] Speaker 0: Let's launch on Friday.`) and generates a structured JSON payload containing the overall summary, key decisions, and assigned action items.
 
-The LangGraph workflow consists of four main steps:
+---
 
-1. **Analysis**: Examines the meeting transcript to identify purpose, topics, tone, and participation
-2. **Summarization**: Creates a concise summary with key points and decisions
-3. **Action Item Extraction**: Identifies action items, assignees, deadlines, and priorities
-4. **Output Formatting**: Combines everything into a well-structured, professional report
+##  Handling Long Recordings (>15 Minutes)
 
-## Getting Started
+LLMs have restricted "context windows" and Whisper can suffer from memory exhaustion or hallucination loops on extremely long audio files. To solve this, the app uses a **Hierarchical Map-Reduce** strategy (`core/long_recording_processor.py`):
+
+1. **Audio Slicing:** The `pydub` library physically cuts the massive audio file into manageable **10-minute chunks**.
+2. **Context Overlaps:** It adds a **15-second overlap** between chunks so that if someone is mid-sentence at the 10-minute mark, their word isn't severed in half.
+3. **Sequential Processing:** It runs Whisper and Pyannote on each 10-minute chunk individually, stitching the final text and timestamps back together.
+4. **Hierarchical Summarization:** The text is passed back in blocks. Mistral writes a "mini-summary" for each 10-minute block. Finally, all the mini-summaries are concatenated, and Mistral reads that document to write the "Master Summary" and final Action List.
+
+---
+
+## 🌍 Multilingual Support
+
+The Whisper `medium` model is highly capable of understanding and transcribing non-English languages. 
+
+The UI explicitly supports selecting the following languages to optimize accuracy (by providing Whisper with a strict language hint):
+- **English** (`en`)
+- **Hindi** (`hi`)
+- **Spanish** (`es`)
+- **French** (`fr`)
+- **German** (`de`)
+- **Chinese** (`zh`)
+- **Japanese** (`ja`)
+- **Russian** (`ru`)
+- **Arabic** (`ar`)
+
+**Auto-Detect:** If you select "Auto-detect", Whisper analyzes the first 30 seconds of audio to detect the language automatically. It supports over 90 languages out-of-the-box.
+
+---
+
+## 🚀 Setup & Installation
 
 ### Prerequisites
+<<<<<<< HEAD
 
 - Python 3.9+
 - An OpenAI API key (for GPT-4o access)
 
+### Download speaker diarization models
+```
+# run this ONCE with your HF token
+from huggingface_hub import snapshot_download
+
+HF_TOKEN = "your_hf_token_here"  # Needed for one-time download
+
+print("Downloading speaker-diarization-3.1...")
+snapshot_download(
+    "pyannote/speaker-diarization-3.1",
+    token=HF_TOKEN,
+    local_dir="./models/speaker-diarization-3.1"
+)
+
+print("Downloading segmentation-3.0...")
+snapshot_download(
+    "pyannote/segmentation-3.0",
+    token=HF_TOKEN,
+    local_dir="./models/segmentation-3.0"
+)
+
+print("All models downloaded.")
+```
 ### Installation
 
 1. Clone this repository
 2. Install dependencies:
+
+1. **Ollama:** Must be installed and running locally.
+   ```bash
+   ollama pull mistral
+   ollama serve
    ```
-   pip install -r requirements.txt
+2. **FFmpeg:** Must be installed on your system for audio conversion.
+   ```bash
+   # macOS
+   brew install ffmpeg
    ```
-3. Set your OpenAI API key:
-   ```
-   export OPENAI_API_KEY="your_api_key_here"
+3. **HuggingFace Token:** Pyannote requires a free HuggingFace access token.
+   ```bash
+   export HUGGINGFACE_TOKEN="your_token_here"
    ```
 
-### Running the Application
-
-Launch the Streamlit app:
-```
+### Running the App
+```bash
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The web interface will open, allowing you to paste meeting transcripts and get summaries and action items.
+Navigate to `http://localhost:8502` to start uploading your meeting recordings!
 
-## Example
 
-Here's a sample of what the output looks like:
-
-```json
-{
-  "meeting_summary": {
-    "summary": "This meeting focused on finalizing Q3 priorities, with the team deciding to prioritize the new user onboarding flow (Priority #1) and mobile app redesign (Priority #2). Resource allocation was set at 60% for onboarding and 40% for mobile redesign.",
-    "key_points": [
-      "Analytics show a 30% drop-off in new user onboarding within the first week",
-      "Mobile app redesign was promised to customers last quarter",
-      "Design team can allocate 2 designers for the mobile redesign starting next week",
-      "Budget allocation was decided at 60% for onboarding and 40% for mobile redesign"
-    ],
-    "decisions": [
-      "New user onboarding flow set as Priority #1",
-      "Mobile app redesign set as Priority #2",
-      "Resource allocation: 60% to onboarding, 40% to mobile redesign",
-      "Bob will lead the onboarding initiative",
-      "Dave will lead the mobile redesign initiative"
-    ]
-  },
-  "action_items": [
-    {
-      "action": "Draft a project plan for the new user onboarding flow",
-      "assignee": "Bob",
-      "due_date": "Friday (end of day)",
-      "priority": "high"
-    },
-    {
-      "action": "Set up a kickoff meeting for the mobile redesign team",
-      "assignee": "Charlie",
-      "due_date": "This afternoon (for Monday meeting)",
-      "priority": "medium"
-    },
-    {
-      "action": "Allocate 2 designers for the mobile redesign project",
-      "assignee": "Eva",
-      "due_date": "Next week",
-      "priority": "medium"
-    }
-  ]
-}
-```
-
-## Customization
-
-The system is designed to be extensible. You can customize:
-
-- The prompt templates to modify how analysis is performed
-- The structure of the summary and action items
-- The UI of the Streamlit application
-
-## Dependencies
-
-- LangGraph
-- LangChain
-- OpenAI
-- Streamlit
-- Pydantic
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
